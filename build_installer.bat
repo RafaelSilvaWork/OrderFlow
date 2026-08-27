@@ -59,8 +59,16 @@ echo       Removendo plugins Qt6 nao utilizados...
 if exist "dist\OrderFlow\_internal\PyQt6\Qt6\plugins\sqldrivers" (
     rmdir /s /q "dist\OrderFlow\_internal\PyQt6\Qt6\plugins\sqldrivers"
 )
+rem NAO apagar a pasta imageformats inteira: e o plugin qico.dll dentro dela
+rem que o Qt usa para decodificar .ico em tempo de execucao (ver
+rem app.setWindowIcon em main.py) - sem ele, QIcon(icon.ico) carrega vazio e
+rem a barra de titulo fica sem icone. PNG ja vem embutido no proprio Qt (sem
+rem precisar de plugin), entao so o qico.dll precisa ficar; o resto pode
+rem seguir sendo removido.
 if exist "dist\OrderFlow\_internal\PyQt6\Qt6\plugins\imageformats" (
-    rmdir /s /q "dist\OrderFlow\_internal\PyQt6\Qt6\plugins\imageformats"
+    for %%F in ("dist\OrderFlow\_internal\PyQt6\Qt6\plugins\imageformats\*.dll") do (
+        if /i not "%%~nxF"=="qico.dll" del /q "%%F"
+    )
 )
 echo       OK
 

@@ -118,7 +118,17 @@ jobs:
           Remove-Item -Recurse -Force "dist\OrderFlow\_internal\playwright\driver\package\.local-browsers" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "dist\OrderFlow\_internal\PyQt6\Qt6\translations" -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force "dist\OrderFlow\_internal\PyQt6\Qt6\plugins\sqldrivers" -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force "dist\OrderFlow\_internal\PyQt6\Qt6\plugins\imageformats" -ErrorAction SilentlyContinue
+          # NAO apagar a pasta imageformats inteira: e o plugin qico.dll dentro
+          # dela que o Qt usa para decodificar .ico em tempo de execucao (ver
+          # app.setWindowIcon em main.py). Sem ele, QIcon(icon.ico) carrega
+          # vazio (isNull=True) e a barra de titulo fica sem icone - bug real,
+          # confirmado, presente em todo build desde que este passo existe.
+          # PNG ja vem embutido no proprio Qt (sem precisar de plugin), entao
+          # so o qico.dll precisa ficar; o resto (gif/icns/jpeg/pdf/svg/tga/
+          # tiff/webp) o app nunca usa e pode seguir sendo removido.
+          Get-ChildItem "dist\OrderFlow\_internal\PyQt6\Qt6\plugins\imageformats" -Filter "*.dll" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -ne "qico.dll" } |
+            Remove-Item -Force
 
       - name: Instalar Inno Setup
         run: choco install innosetup --no-progress -y
