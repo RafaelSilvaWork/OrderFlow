@@ -1,0 +1,40 @@
+# Dados reais / sensíveis - nunca versionar
+coupa_profiles.json
+coupa_profiles.salt
+coupa_fw.secret
+coupa_instance.json
+coupa_power_automate.json
+coupa_access.token
+historico_renomeador.csv
+Relatorio_Geracao_PDF_*.xlsx
+mapeamento_fornecedores.xlsx
+mapeamento_unidades.xlsx
+mapeamento_solicitantes.xlsx
+.env
+
+# Build / instalador
+dist/
+build/
+installer_output/
+*.spec.bak
+tesseract_bundle/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Cobertura de testes (gerada pelo pytest-cov)
+.coverage
+coverage.xml
+
+# Saída de execução
+saida_pedidos_pdf/
+
+# Editor
+.vscode/
+
+# Scripts locais
+subir_github.bat

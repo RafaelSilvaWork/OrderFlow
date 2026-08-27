@@ -1,0 +1,190 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    env:
+      # Builda a variante generica (OrderFlow) por padrao neste repositorio
+      # publico - ver modules/branding.py, coupa_framework.spec e
+      # installer.iss, que leem essa mesma env var.
+      CFW_BRANDING: generic
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install pyinstaller
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -r requirements.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Preparar telemetria (Application Insights, opcional)
+        env:
+          APPINSIGHTS_CONNECTION_STRING: ${{ secrets.APPINSIGHTS_CONNECTION_STRING }}
+        run: |
+          # Substitui o valor vazio commitado em modules/config.py pelo secret do
+          # repositorio antes de compilar, para o valor real nunca ficar no git.
+          # Se o secret nao estiver configurado ainda, isso vira um no-op seguro
+          # (telemetria continua desligada).
+          $escaped = $env:APPINSIGHTS_CONNECTION_STRING -replace '"', '\"' -replace '\$', '$$'
+          $replacement = 'APPINSIGHTS_CONNECTION_STRING = "' + $escaped + '"'
+          (Get-Content modules\config.py) -replace 'APPINSIGHTS_CONNECTION_STRING = ".*"', $replacement | Set-Content modules\config.py
+
+      - name: Preparar controle de acesso remoto (gist, opcional)
+        env:
+          ACCESS_GATE_GIST_ID: ${{ secrets.ACCESS_GATE_GIST_ID }}
+        run: |
+          # Mesmo mecanismo do step de telemetria acima: substitui o literal
+          # vazio commitado em modules/branding.py pelo secret do repositorio
+          # antes de compilar, para o ID do gist nunca ficar no git (ver
+          # ACCESS_GATE_GIST_ID em modules/branding.py e modules/access_gate.py).
+          # Sem o secret configurado (ex: repositorio publico), vira um no-op
+          # seguro - controle de acesso fica desligado (fail-open).
+          $escaped = $env:ACCESS_GATE_GIST_ID -replace '"', '\"' -replace '\$', '$$'
+          $replacement = 'ACCESS_GATE_GIST_ID = "' + $escaped + '"'
+          (Get-Content modules\branding.py) -replace 'ACCESS_GATE_GIST_ID = ".*"', $replacement | Set-Content modules\branding.py
+
+      - name: Instalar Tesseract OCR
+        run: choco install tesseract --no-progress -y
+
+      - name: Preparar bundle do Tesseract
+        run: |
+          # Empacota so o essencial (executavel, DLLs e os idiomas usados)
+          # dentro do instalador - ver resolve_tesseract_executable em
+          # modules/config.py e coupa_framework.spec. Sem isso, quem for
+          # rodar a Aba 2 precisaria instalar o Tesseract manualmente na
+          # propria maquina para o OCR de PDF escaneado funcionar.
+          $tesseractExe = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+          if (-not (Test-Path $tesseractExe)) {
+              $cmd = Get-Command tesseract -ErrorAction SilentlyContinue
+              if ($cmd) { $tesseractExe = $cmd.Source }
+          }
+          if (-not (Test-Path $tesseractExe)) {
+              Write-Error "Tesseract nao encontrado apos a instalacao via choco."
+              exit 1
+          }
+          $tesseractDir = Split-Path $tesseractExe -Parent
+
+          New-Item -ItemType Directory -Path "tesseract_bundle\tessdata" -Force | Out-Null
+          Copy-Item $tesseractExe "tesseract_bundle\"
+          Copy-Item "$tesseractDir\*.dll" "tesseract_bundle\"
+
+          # O pacote do Chocolatey so vem com o ingles - portugues (e ingles,
+          # defensivamente, caso mude) e baixado do repositorio oficial do
+          # Tesseract quando nao vier junto.
+          foreach ($lang in @("por", "eng")) {
+              $origem = "$tesseractDir\tessdata\$lang.traineddata"
+              $destino = "tesseract_bundle\tessdata\$lang.traineddata"
+              if (Test-Path $origem) {
+                  Copy-Item $origem $destino
+              } else {
+                  Write-Host "Idioma '$lang' nao veio com o pacote do Chocolatey - baixando..."
+                  # $LASTEXITCODE nao se aplica a cmdlets do PowerShell (so a
+                  # executaveis externos) - Invoke-WebRequest ja lanca uma
+                  # excecao terminante sozinho se a requisicao falhar, entao
+                  # so falta confirmar que o arquivo baixado existe de fato.
+                  Invoke-WebRequest -Uri "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/$lang.traineddata" -OutFile $destino
+                  if (-not (Test-Path $destino)) {
+                      Write-Error "Falha ao baixar o idioma '$lang' para o Tesseract."
+                      exit 1
+                  }
+              }
+          }
+
+      - name: Compilar executavel com PyInstaller
+        run: |
+          if (Test-Path "dist\OrderFlow") { Remove-Item -Recurse -Force "dist\OrderFlow" }
+          if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
+          python -m PyInstaller coupa_framework.spec --noconfirm --clean
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Remover arquivos nao usados do pacote
+        run: |
+          Remove-Item -Recurse -Force "dist\OrderFlow\_internal\playwright\driver\package\.local-browsers" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "dist\OrderFlow\_internal\PyQt6\Qt6\translations" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "dist\OrderFlow\_internal\PyQt6\Qt6\plugins\sqldrivers" -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force "dist\OrderFlow\_internal\PyQt6\Qt6\plugins\imageformats" -ErrorAction SilentlyContinue
+
+      - name: Instalar Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Compilar instalador
+        run: |
+          if (-not (Test-Path "installer_output")) { New-Item -ItemType Directory -Path "installer_output" | Out-Null }
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Gerar checksum SHA-256 do instalador
+        run: |
+          # Publicado como asset separado (<instalador>.sha256) para o updater
+          # (modules/updater.py) e o module_installer conferirem a integridade
+          # do .exe antes de executa-lo - sem isso, um asset adulterado seria
+          # baixado e rodado silenciosamente sem nenhuma checagem.
+          $installer = Get-ChildItem "installer_output\OrderFlow_Setup_*.exe" | Select-Object -First 1
+          if (-not $installer) {
+              Write-Error "Instalador nao encontrado em installer_output\"
+              exit 1
+          }
+          $hash = (Get-FileHash -Algorithm SHA256 $installer.FullName).Hash.ToLower()
+          Set-Content -Path "$($installer.FullName).sha256" -Value $hash -NoNewline -Encoding ascii
+
+      - name: Publicar release no GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $installer = Get-ChildItem "installer_output\OrderFlow_Setup_*.exe" | Select-Object -First 1
+          if (-not $installer) {
+              Write-Error "Instalador nao encontrado em installer_output\"
+              exit 1
+          }
+          $checksum = "$($installer.FullName).sha256"
+
+          # A API do GitHub as vezes responde com 503 "no server available"
+          # de forma transitoria (visto duas vezes seguidas em releases
+          # recentes) - tenta de novo com espera antes de falhar o job.
+          $maxAttempts = 5
+          $delaySeconds = 30
+          $success = $false
+          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+              if ($attempt -gt 1) {
+                  # Uma tentativa anterior pode ter criado a release mas falhado
+                  # no upload do instalador - remove antes de tentar de novo pra
+                  # "gh release create" nao falhar com "release already exists".
+                  gh release view $tag *> $null
+                  if ($LASTEXITCODE -eq 0) {
+                      gh release delete $tag --yes *> $null
+                  }
+                  Write-Host "Tentativa $attempt de $maxAttempts falhou - aguardando $delaySeconds s (provavel instabilidade do GitHub)..."
+                  Start-Sleep -Seconds $delaySeconds
+              }
+
+              gh release create $tag $installer.FullName $checksum `
+                --title "OrderFlow $tag" `
+                --notes "Versao $tag. Baixe o instalador e execute. Se ja tiver instalado, atualiza automaticamente." `
+                --latest
+              if ($LASTEXITCODE -eq 0) {
+                  $success = $true
+                  break
+              }
+          }
+
+          if (-not $success) {
+              Write-Error "Falha ao publicar release apos $maxAttempts tentativas."
+              exit 1
+          }
