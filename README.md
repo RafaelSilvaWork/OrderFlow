@@ -19,6 +19,26 @@ O projeto reúne em uma interface única as etapas de:
 - organização de documentos;
 - envio de e-mails de autorização.
 
+## Capturas de tela
+
+*Interface com dados de demonstração (fictícios) - nenhuma requisição, fornecedor ou pedido real é mostrado.*
+
+| Extrator Inteligente | Baixador de Orçamentos |
+|---|---|
+| ![Extrator Inteligente](screenshots/01_extrator.png) | ![Baixador de Orçamentos](screenshots/02_baixador.png) |
+
+| Gerador de PDF de Pedidos | Renomeador |
+|---|---|
+| ![Gerador de PDF de Pedidos](screenshots/03_gerador_pdf.png) | ![Renomeador](screenshots/04_renomeador.png) |
+
+| Organizador | Disparo de E-mails |
+|---|---|
+| ![Organizador](screenshots/05_organizador.png) | ![Disparo de E-mails](screenshots/06_disparo_emails.png) |
+
+| Gerenciar Perfis | Painel de status dos módulos |
+|---|---|
+| ![Gerenciar Perfis](screenshots/07_gerenciar_perfis.png) | ![Painel de status dos módulos](screenshots/08_painel_modulos.png) |
+
 ## Requisitos
 
 - Python 3.10+
