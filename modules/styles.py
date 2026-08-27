@@ -1,4 +1,4 @@
-"""Tema dark/tech do Coupa Framework.
+"""Tema dark/tech do framework.
 
 Folha de estilo global (QSS) + uns utilitários pra manter a aparência
 consistente em todas as abas. Visual escuro, inspirado em VS Code / GitHub Dark.

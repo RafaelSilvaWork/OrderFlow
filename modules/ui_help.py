@@ -400,7 +400,7 @@ class HelpDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Ajuda - Coupa Framework")
+        self.setWindowTitle(f"Ajuda - {APP_DISPLAY_NAME}")
         aplicar_titlebar_escura(self)
         self.resize(900, 600)
         layout = QVBoxLayout(self)

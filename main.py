@@ -332,7 +332,7 @@ class FrameworkApp(QMainWindow):
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(16, 0, 16, 0)
 
-        self.lbl_header_title = QLabel("\U0001f310 Coupa Framework - Automação de Suprimentos")
+        self.lbl_header_title = QLabel(f"\U0001f310 {APP_DISPLAY_NAME} - Automação de Suprimentos")
         self.lbl_header_title.setObjectName("appHeaderTitle")
         # Stretch=1: o título é o texto mais longo do header - sem prioridade
         # de espaço, ele é o primeiro a ser espremido/cortado quando a janela
