@@ -71,6 +71,16 @@ Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortugue
 [Tasks]
 Name: "desktopicon"; Description: "Criar atalho na Área de Trabalho"; GroupDescription: "Atalhos:"; Flags: unchecked
 
+[InstallDelete]
+; Remove a pasta _internal INTEIRA antes de copiar a versão nova. Sem isso,
+; arquivos de uma versão anterior que não existem mais na atual (ex: assets
+; de uma estrutura de pastas antiga, como assets\logo_pecas antes da divisão
+; por marca) ficam acumulados pra sempre a cada atualização - o Flags:
+; ignoreversion do [Files] abaixo só sobrescreve o que já existe, nunca
+; remove o que sobrou de uma versão anterior. Não afeta module_selection.json
+; nem dados do usuário (%APPDATA%), que ficam fora de {app}\_internal.
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Files]
 ; Copia toda a pasta gerada pelo PyInstaller (nome depende da marca - ver
 ; APP_EXE_NAME em coupa_framework.spec, que precisa ser compilado com o MESMO
