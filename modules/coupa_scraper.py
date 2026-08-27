@@ -536,6 +536,22 @@ class CoupaScraper:
                     log_callback(f"Erro na requisição #{req}: {str(e)}")
                     extracted_data.append({"requisicao": req, "erro": f"Falha na extração: {str(e)}"})
 
+        # Sem isso, o log nunca mostrava um resumo final de sucesso - o
+        # AutomationWorker (ver log_with_progress) já procurava por uma
+        # mensagem com "extração" + "concluída" pra levar a barra de
+        # progresso a 100%, mas nada nunca emitia essa mensagem (bug desde o
+        # commit inicial do projeto). Omitido quando cancelado pelo usuário -
+        # esse caso já tem sua própria mensagem terminal, mostrar os dois
+        # juntos ("cancelada" + "concluída") seria confuso.
+        if not (self.cancel_event and self.cancel_event.is_set()):
+            pedidos_count = sum(1 for item in extracted_data if item.get("status") == "Com pedido")
+            sem_pedido_count = sum(1 for item in extracted_data if item.get("status") == "Sem pedido emitido")
+            erro_count = sum(1 for item in extracted_data if "erro" in item)
+            log_callback(
+                f"🏁 Extração concluída: {pedidos_count} pedido(s) encontrado(s), "
+                f"{sem_pedido_count} sem pedido emitido, {erro_count} com erro."
+            )
+
         return extracted_data
 
 

@@ -151,6 +151,53 @@ def test_erro_de_conexao_recusada_ainda_aborta_o_lote(monkeypatch):
     assert any("abortando" in msg.lower() for msg in logs)
 
 
+def test_extracao_concluida_normalmente_loga_resumo_final(monkeypatch):
+    """AutomationWorker.log_with_progress procura por uma mensagem com
+    "extração" + "concluída" pra levar a barra de progresso a 100% - sem
+    _extrair() efetivamente logar isso ao terminar, a barra nunca chegava lá
+    e nenhum resumo de sucesso aparecia no log (bug desde o commit inicial)."""
+    monkeypatch.setattr("modules.coupa_scraper.get_coupa_base_url", lambda: "https://empresa.coupahost.com")
+
+    page = _FakePage(goto_effects=[None, None])
+    context = _FakeContext(page)
+    scraper = _make_scraper()
+    logs = []
+
+    asyncio.run(scraper._extrair(context, logs.append, None, []))
+
+    resumo = [msg for msg in logs if "extração" in msg.lower() and "concluída" in msg.lower()]
+    assert len(resumo) == 1
+    assert "0 pedido(s) encontrado(s)" in resumo[0]
+    assert "1 sem pedido emitido" in resumo[0]
+    assert "0 com erro" in resumo[0]
+
+
+def test_extracao_cancelada_nao_loga_resumo_final(monkeypatch):
+    """Cancelamento já tem sua própria mensagem terminal ("cancelada pelo
+    usuário") - logar "concluída" também ficaria contraditório/confuso."""
+    monkeypatch.setattr("modules.coupa_scraper.get_coupa_base_url", lambda: "https://empresa.coupahost.com")
+
+    page = _FakePage(goto_effects=[None])
+    context = _FakeContext(page)
+    login_event = threading.Event()
+    login_event.set()
+    cancel_event = threading.Event()
+    cancel_event.set()
+    scraper = CoupaScraper(
+        requisicoes=["123"],
+        config_extrair={},
+        pause_event=None,
+        login_confirmation_event=login_event,
+        cancel_event=cancel_event,
+    )
+    logs = []
+
+    asyncio.run(scraper._extrair(context, logs.append, None, []))
+
+    assert any("cancelada" in msg.lower() for msg in logs)
+    assert not any("extração" in msg.lower() and "concluída" in msg.lower() for msg in logs)
+
+
 def test_falha_nao_relacionada_a_rede_nao_aciona_retry(monkeypatch):
     """Um erro que não é de rede (ex: seletor quebrado) não deve ser retentado
     nem tratado como abortando o lote - só essa requisição falha."""
