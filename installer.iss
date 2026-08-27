@@ -2,7 +2,7 @@
 ; escolhida pela env var CFW_BRANDING ("hapvida", padrão, ou "generic") -
 ; setada pelo workflow de release antes de chamar o ISCC. Build local sem a
 ; env var definida compila a variante Hapvida (comportamento de sempre).
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.0.1"
 #define Branding GetEnv("CFW_BRANDING")
 #if Branding == "generic"
   #define MyAppName "OrderFlow"

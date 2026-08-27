@@ -18,7 +18,7 @@ from modules.styles import aplicar_titlebar_escura
 
 logger = logging.getLogger(__name__)
 
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.0.1"
 
 # Suaviza o limite de 60 requisições/hora sem autenticação da API do GitHub -
 # fácil de estourar em redes com IP compartilhado, onde várias pessoas abrem
