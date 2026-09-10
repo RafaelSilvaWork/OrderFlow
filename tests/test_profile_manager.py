@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+import modules.config as config_module
 from modules.config import _LEGACY_PBKDF2_ITERATIONS, ProfileManager, _get_fernet, decrypt_value, encrypt_value
 
 
@@ -55,3 +56,46 @@ def test_load_profiles_missing_file(tmp_path):
     with patch("modules.config.CONFIG_FILE", tmp_path / "nao_existe.json"):
         result = ProfileManager.load_profiles()
     assert result == {}
+
+
+def test_migracao_legada_preserva_conjunto_criptografado(tmp_path, monkeypatch):
+    origem = tmp_path / "_internal"
+    destino = tmp_path / "appdata" / "CoupaFramework"
+    origem.mkdir()
+    arquivos = {
+        "coupa_profiles.json": b'{"Perfil A": {}}',
+        "coupa_profiles.salt": b"salt-antigo",
+        "coupa_fw.secret": b"segredo-antigo",
+        "coupa_instance.json": b'{"coupa_base_url": "https://empresa.coupahost.com"}',
+        "coupa_power_automate.json": b'{"url": "criptografada"}',
+    }
+    for nome, conteudo in arquivos.items():
+        (origem / nome).write_bytes(conteudo)
+
+    monkeypatch.setattr(config_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(config_module, "PROJECT_ROOT", origem)
+    monkeypatch.setattr(config_module, "USER_DATA_DIR", destino)
+    monkeypatch.setattr(config_module.sys, "executable", str(tmp_path / "app" / "CoupaFramework.exe"))
+
+    config_module._migrate_legacy_user_data()
+
+    for nome, conteudo in arquivos.items():
+        assert (destino / nome).read_bytes() == conteudo
+
+
+def test_migracao_legada_nunca_sobrescreve_dado_persistente(tmp_path, monkeypatch):
+    origem = tmp_path / "_internal"
+    destino = tmp_path / "appdata" / "CoupaFramework"
+    origem.mkdir(parents=True)
+    destino.mkdir(parents=True)
+    (origem / "coupa_profiles.json").write_text("antigo", encoding="utf-8")
+    (destino / "coupa_profiles.json").write_text("atual", encoding="utf-8")
+
+    monkeypatch.setattr(config_module.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(config_module, "PROJECT_ROOT", origem)
+    monkeypatch.setattr(config_module, "USER_DATA_DIR", destino)
+    monkeypatch.setattr(config_module.sys, "executable", str(tmp_path / "app" / "CoupaFramework.exe"))
+
+    config_module._migrate_legacy_user_data()
+
+    assert (destino / "coupa_profiles.json").read_text(encoding="utf-8") == "atual"

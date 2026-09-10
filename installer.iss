@@ -132,6 +132,47 @@ begin
   ) = IDYES;
 end;
 
+procedure PreserveLegacyUserFile(FileName: String);
+var
+  TargetDir: String;
+  TargetFile: String;
+  SourceFile: String;
+begin
+  TargetDir := ExpandConstant('{userappdata}\{#MyAppDirName}');
+  TargetFile := TargetDir + '\' + FileName;
+
+  // Nunca substitui um arquivo que já esteja no local persistente correto.
+  if FileExists(TargetFile) then
+    Exit;
+
+  SourceFile := ExpandConstant('{app}\_internal\') + FileName;
+  if not FileExists(SourceFile) then
+    SourceFile := ExpandConstant('{app}\') + FileName;
+  if not FileExists(SourceFile) then
+    Exit;
+
+  if not DirExists(TargetDir) then
+    ForceDirectories(TargetDir);
+  if FileCopy(SourceFile, TargetFile, False) then
+    Log('Dado de usuario legado preservado em: ' + TargetFile)
+  else
+    Log('AVISO: nao foi possivel preservar o dado de usuario: ' + SourceFile);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  // Executa antes de [InstallDelete]. Perfis e configuracoes das versoes
+  // antigas ficavam por engano dentro de {app}\_internal, pasta que precisa
+  // ser renovada em toda atualizacao. Copia o conjunto criptografado completo
+  // para %APPDATA% antes que qualquer binario seja removido.
+  PreserveLegacyUserFile('coupa_profiles.json');
+  PreserveLegacyUserFile('coupa_profiles.salt');
+  PreserveLegacyUserFile('coupa_fw.secret');
+  PreserveLegacyUserFile('coupa_instance.json');
+  PreserveLegacyUserFile('coupa_power_automate.json');
+  Result := '';
+end;
+
 // Importante: o parâmetro "Check:" de [UninstallRun] é avaliado durante a
 // INSTALAÇÃO (na etapa "Salvando informações de desinstalação..."), não na
 // hora de desinstalar — por isso a pergunta aparecia mesmo na primeira

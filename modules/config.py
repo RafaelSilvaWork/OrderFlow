@@ -1,6 +1,8 @@
 import base64
+import contextlib
 import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,9 +21,55 @@ except ImportError:
     pass  # python-dotenv não instalado - segue usando só variáveis de ambiente do sistema
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_FILE = PROJECT_ROOT / "coupa_profiles.json"
-INSTANCE_CONFIG_FILE = PROJECT_ROOT / "coupa_instance.json"
-POWER_AUTOMATE_CONFIG_FILE = PROJECT_ROOT / "coupa_power_automate.json"
+USER_DATA_DIR = (
+    Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+    / APP_DATA_DIR_NAME
+)
+CONFIG_FILE = USER_DATA_DIR / "coupa_profiles.json"
+INSTANCE_CONFIG_FILE = USER_DATA_DIR / "coupa_instance.json"
+POWER_AUTOMATE_CONFIG_FILE = USER_DATA_DIR / "coupa_power_automate.json"
+
+_USER_DATA_FILES = (
+    "coupa_profiles.json",
+    "coupa_profiles.salt",
+    "coupa_fw.secret",
+    "coupa_instance.json",
+    "coupa_power_automate.json",
+)
+
+
+def _migrate_legacy_user_data() -> None:
+    """Copia configurações de instalações antigas para o diretório persistente.
+
+    Versões anteriores calculavam ``PROJECT_ROOT`` a partir de ``__file__``.
+    No executável PyInstaller isso aponta para ``{app}/_internal``; portanto
+    perfis, instância, salt e segredo acabavam junto dos binários descartáveis.
+    O instalador novo migra esses arquivos antes de limpar ``_internal``; este
+    fallback cobre instalações manuais e layouts antigos sem sobrescrever uma
+    configuração que já exista no destino correto.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+
+    destinos_criados = False
+    origens = (PROJECT_ROOT, Path(sys.executable).resolve().parent)
+    for nome in _USER_DATA_FILES:
+        destino = USER_DATA_DIR / nome
+        if destino.exists():
+            continue
+        for origem_dir in origens:
+            origem = origem_dir / nome
+            if not origem.exists():
+                continue
+            if not destinos_criados:
+                USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+                destinos_criados = True
+            with contextlib.suppress(OSError):
+                shutil.copy2(origem, destino)
+            break
+
+
+_migrate_legacy_user_data()
 
 
 def resolve_asset_path(caminho_relativo: str) -> str:
@@ -150,6 +198,7 @@ def get_coupa_base_url() -> str:
 def set_coupa_base_url(url: str) -> str:
     """Salva a instância do Coupa declarada pelo usuário na UI. Retorna a URL normalizada."""
     normalized = _normalize_coupa_base_url(url)
+    INSTANCE_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(INSTANCE_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump({"coupa_base_url": normalized}, f, indent=2, ensure_ascii=False)
     return normalized
@@ -175,6 +224,7 @@ def get_power_automate_url() -> str:
 def set_power_automate_url(url: str) -> str:
     """Salva (criptografada) a URL do flow do Power Automate. Retorna a URL normalizada."""
     normalized = (url or "").strip()
+    POWER_AUTOMATE_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(POWER_AUTOMATE_CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump({"url": encrypt_value(normalized)}, f, indent=2, ensure_ascii=False)
     return normalized
@@ -231,7 +281,8 @@ def _get_secret() -> bytes:
     if secret_env:
         return secret_env.encode("utf-8")
 
-    secret_file = PROJECT_ROOT / "coupa_fw.secret"
+    secret_file = USER_DATA_DIR / "coupa_fw.secret"
+    secret_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         if secret_file.exists():
             return secret_file.read_bytes()
@@ -272,6 +323,7 @@ def _derive_key(salt: bytes, iterations: int = PBKDF2_ITERATIONS) -> bytes:
 
 def _get_fernet(iterations: int = PBKDF2_ITERATIONS) -> Fernet:
     salt_file = CONFIG_FILE.with_suffix(".salt")
+    salt_file.parent.mkdir(parents=True, exist_ok=True)
     if salt_file.exists():
         salt = salt_file.read_bytes()
     else:
@@ -353,6 +405,7 @@ class ProfileManager:
     @staticmethod
     def save_profiles(profiles: dict[str, Any]):
         """Salva perfis no arquivo JSON com criptografia de campos sensíveis."""
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         # Criptografa os configs sensíveis de cada perfil antes de salvar
         encrypted_profiles = {}
         for profile_name, profile_data in profiles.items():
