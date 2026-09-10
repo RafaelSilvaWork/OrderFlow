@@ -230,9 +230,21 @@ class OrcamentoDownloaderWidget(QWidget):
                         os.remove(os.path.join(self.pasta_download, f))
 
         if not sucesso:
-            self.log("\U0001f6d1 Operacao cancelada pelo usuario.")
-            if not get_modo_automatico().ativo:
-                QMessageBox.information(self, "Cancelado", "O processo de download foi cancelado.")
+            cancelado_pelo_usuario = bool(self.worker and self.worker.scraper.cancelado)
+            if cancelado_pelo_usuario:
+                mensagem = "Operação cancelada pelo usuário."
+                self.log(f"🛑 {mensagem}")
+            else:
+                mensagem = "O processo de download foi interrompido por uma falha técnica. Consulte o log."
+                self.log(f"❌ {mensagem}")
+
+            if get_modo_automatico().ativo:
+                get_modo_automatico().desativar()
+                self.automatico_finished.emit(False, mensagem)
+            elif cancelado_pelo_usuario:
+                QMessageBox.information(self, "Cancelado", mensagem)
+            else:
+                QMessageBox.critical(self, "Falha no download", mensagem)
             return
 
         if get_modo_automatico().ativo:

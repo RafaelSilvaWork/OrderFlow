@@ -1,4 +1,5 @@
 import asyncio
+import io
 
 import fitz
 import pytest
@@ -57,6 +58,50 @@ def test_download_nao_oculta_fechamento_do_edge():
                 object(), [_ElementoComPaginaFechada()], "123", lambda _valor: None
             )
         )
+
+
+def test_download_usa_url_autenticada_sem_clicar_no_anexo(monkeypatch):
+    class _Buffer(io.BytesIO):
+        def __exit__(self, *_args):
+            return False
+
+    class _Resposta:
+        ok = True
+        status = 200
+
+        async def body(self):
+            return b"conteudo do pdf"
+
+    class _Request:
+        def __init__(self):
+            self.url = None
+
+        async def get(self, url, **_kwargs):
+            self.url = url
+            return _Resposta()
+
+    class _Elemento:
+        async def inner_text(self):
+            return "orcamento.pdf"
+
+        async def evaluate(self, _script):
+            return "https://coupa.example/attachments/123/download"
+
+    request = _Request()
+    page = type("Page", (), {"context": type("Context", (), {"request": request})()})()
+    buffer = _Buffer()
+    scraper = DownloadScraper(requisicoes=[], pasta_download=".")
+    monkeypatch.setattr("builtins.open", lambda *_args, **_kwargs: buffer)
+    monkeypatch.setattr(scraper, "analisar_arquivo", lambda *_args: (True, "destino"))
+    monkeypatch.setattr("modules.download_scraper.os.path.exists", lambda _path: False)
+
+    salvos = asyncio.run(
+        scraper._baixar_e_validar_anexos(page, [_Elemento()], "123", lambda _valor: None)
+    )
+
+    assert salvos == 1
+    assert request.url == "https://coupa.example/attachments/123/download"
+    assert buffer.getvalue() == b"conteudo do pdf"
 
 
 def test_analisar_arquivo_rejeita_de_acordo(tmp_path):

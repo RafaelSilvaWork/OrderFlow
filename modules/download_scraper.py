@@ -376,11 +376,38 @@ class DownloadScraper:
                 if self.contem_de_acordo(nome):
                     continue
 
-                arquivo_temporario = os.path.join(self.pasta_download, f"temp_{nome}")
-                async with page.expect_download(timeout=30000) as download_info:
-                    await el.click()
-                download = await download_info.value
-                await download.save_as(arquivo_temporario)
+                # O clique no componente de anexo do Coupa pode fechar a única
+                # aba do contexto persistente (observado em alguns PDFs). Como o
+                # BrowserContext compartilha os cookies com seu APIRequestContext,
+                # baixar o href diretamente preserva a sessão e não aciona o JS
+                # destrutivo associado ao clique.
+                nome_temporario = re.sub(r'[<>:"/\\|?*]', "_", nome)
+                arquivo_temporario = os.path.join(self.pasta_download, f"temp_{nome_temporario}")
+                url_anexo = await el.evaluate(
+                    """(e) => {
+                        const link = e.closest('a[href]');
+                        if (link && /^https?:/i.test(link.href)) return link.href;
+                        const container = e.closest('[data-download-url], [data-url], [data-href]');
+                        if (!container) return null;
+                        const raw = container.dataset.downloadUrl || container.dataset.url || container.dataset.href;
+                        return raw ? new URL(raw, document.baseURI).href : null;
+                    }"""
+                )
+                if not url_anexo:
+                    raise RuntimeError("URL direta do anexo não encontrada no HTML do Coupa")
+
+                resposta = await page.context.request.get(
+                    url_anexo,
+                    timeout=30000,
+                    fail_on_status_code=False,
+                )
+                if not resposta.ok:
+                    raise RuntimeError(f"servidor respondeu HTTP {resposta.status}")
+                conteudo = await resposta.body()
+                if not conteudo:
+                    raise RuntimeError("servidor retornou um arquivo vazio")
+                with open(arquivo_temporario, "wb") as arquivo:
+                    arquivo.write(conteudo)
 
                 extensoes_suportadas = (".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt")
                 if nome.lower().endswith(extensoes_suportadas):
