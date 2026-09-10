@@ -396,18 +396,45 @@ class DownloadScraper:
                 if not url_anexo:
                     raise RuntimeError("URL direta do anexo não encontrada no HTML do Coupa")
 
-                resposta = await page.context.request.get(
-                    url_anexo,
-                    timeout=30000,
-                    fail_on_status_code=False,
-                )
-                if not resposta.ok:
-                    raise RuntimeError(f"servidor respondeu HTTP {resposta.status}")
-                conteudo = await resposta.body()
-                if not conteudo:
-                    raise RuntimeError("servidor retornou um arquivo vazio")
-                with open(arquivo_temporario, "wb") as arquivo:
-                    arquivo.write(conteudo)
+                try:
+                    resposta = await page.context.request.get(
+                        url_anexo,
+                        timeout=30000,
+                        fail_on_status_code=False,
+                    )
+                    if not resposta.ok:
+                        raise RuntimeError(f"servidor respondeu HTTP {resposta.status}")
+                    conteudo = await resposta.body()
+                    if not conteudo:
+                        raise RuntimeError("servidor retornou um arquivo vazio")
+                    with open(arquivo_temporario, "wb") as arquivo:
+                        arquivo.write(conteudo)
+                except Exception as erro_http:
+                    # O APIRequestContext roda no runtime do Playwright e pode
+                    # não reconhecer a CA do proxy corporativo instalada no
+                    # Windows. Nesse caso específico, usa uma aba descartável
+                    # do Edge: ela herda sessão e confiança do sistema, sem
+                    # desativar a validação TLS nem arriscar a aba principal.
+                    if "self-signed certificate in certificate chain" not in str(erro_http).lower():
+                        raise
+                    aba_download = await page.context.new_page()
+                    try:
+                        async with aba_download.expect_download(timeout=30000) as download_info:
+                            await aba_download.evaluate(
+                                """(url) => {
+                                    const link = document.createElement('a');
+                                    link.href = url;
+                                    link.style.display = 'none';
+                                    document.body.appendChild(link);
+                                    link.click();
+                                }""",
+                                url_anexo,
+                            )
+                        download = await download_info.value
+                        await download.save_as(arquivo_temporario)
+                    finally:
+                        if not aba_download.is_closed():
+                            await aba_download.close()
 
                 extensoes_suportadas = (".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt")
                 if nome.lower().endswith(extensoes_suportadas):

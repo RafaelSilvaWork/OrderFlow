@@ -1,5 +1,6 @@
 import asyncio
 import io
+from pathlib import Path
 
 import fitz
 import pytest
@@ -102,6 +103,76 @@ def test_download_usa_url_autenticada_sem_clicar_no_anexo(monkeypatch):
     assert salvos == 1
     assert request.url == "https://coupa.example/attachments/123/download"
     assert buffer.getvalue() == b"conteudo do pdf"
+
+
+def test_download_com_certificado_corporativo_usa_aba_descartavel(tmp_path, monkeypatch):
+    class _Request:
+        async def get(self, *_args, **_kwargs):
+            raise RuntimeError("self-signed certificate in certificate chain")
+
+    class _Download:
+        async def save_as(self, caminho):
+            Path(caminho).write_bytes(b"conteudo do pdf")
+
+    class _DownloadInfo:
+        @property
+        def value(self):
+            async def _obter():
+                return _Download()
+
+            return _obter()
+
+    class _ExpectDownload:
+        async def __aenter__(self):
+            return _DownloadInfo()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class _AbaDownload:
+        def __init__(self):
+            self.fechada = False
+            self.url = None
+
+        def expect_download(self, **_kwargs):
+            return _ExpectDownload()
+
+        async def evaluate(self, _script, url):
+            self.url = url
+
+        def is_closed(self):
+            return self.fechada
+
+        async def close(self):
+            self.fechada = True
+
+    class _Elemento:
+        async def inner_text(self):
+            return "orcamento.pdf"
+
+        async def evaluate(self, _script):
+            return "https://coupa.example/attachments/123/download"
+
+    aba_download = _AbaDownload()
+
+    class _Context:
+        request = _Request()
+
+        async def new_page(self):
+            return aba_download
+
+    contexto = _Context()
+    page = type("Page", (), {"context": contexto})()
+    scraper = DownloadScraper(requisicoes=[], pasta_download=str(tmp_path))
+    monkeypatch.setattr(scraper, "analisar_arquivo", lambda *_args: (True, "destino"))
+
+    salvos = asyncio.run(
+        scraper._baixar_e_validar_anexos(page, [_Elemento()], "123", lambda _valor: None)
+    )
+
+    assert salvos == 1
+    assert aba_download.url == "https://coupa.example/attachments/123/download"
+    assert aba_download.fechada is True
 
 
 def test_analisar_arquivo_rejeita_de_acordo(tmp_path):
