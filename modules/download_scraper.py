@@ -36,6 +36,18 @@ except ImportError:
 _SELETOR_ANEXOS = "span[aria-label^='Anexo de arquivo']"
 
 
+class NavegadorFechadoError(RuntimeError):
+    """Sinaliza que uma operação perdeu a aba ou o contexto do Playwright."""
+
+
+def _alvo_playwright_foi_fechado(erro: Exception) -> bool:
+    """Reconhece TargetClosedError sem depender da versão do Playwright."""
+    return (
+        erro.__class__.__name__ == "TargetClosedError"
+        or "target page, context or browser has been closed" in str(erro).lower()
+    )
+
+
 class DownloadScraper:
     def __init__(self, requisicoes: list[str], pasta_download: str):
         # Nunca processa a mesma requisição duas vezes (ex: uma requisição com
@@ -46,6 +58,7 @@ class DownloadScraper:
         self.pasta_download = pasta_download
         self.arquivos_salvos_na_execucao: list[str] = []
         self.requisicoes_sem_arquivos: list[str] = []
+        self._requisicoes_concluidas: set[str] = set()
         self.cancelado = False
         self._log_callback: Callable[[str], None] | None = None
 
@@ -263,12 +276,23 @@ class DownloadScraper:
         user_data_dir = str(PERFIL_EDGE_DOWNLOAD)  # Item 16: path centralizado em config.py
         PERFIL_EDGE_DOWNLOAD.mkdir(parents=True, exist_ok=True)
 
-        try:
-            async with PlaywrightContextManager(user_data_dir=user_data_dir) as context:
-                return await self._processar(context, log_callback, progress_req_callback, progress_down_callback)
-        except Exception as e:
-            log_callback(f"ERRO CRÍTICO AO INICIAR EDGE: {str(e)}")
-            return False
+        for tentativa_contexto in range(2):
+            try:
+                async with PlaywrightContextManager(user_data_dir=user_data_dir) as context:
+                    return await self._processar(
+                        context, log_callback, progress_req_callback, progress_down_callback
+                    )
+            except NavegadorFechadoError as e:
+                if tentativa_contexto == 0:
+                    log_callback(f"⚠️ {e} Reiniciando o Edge e retomando o lote...")
+                    continue
+                log_callback(f"❌ O Edge foi encerrado novamente: {e}")
+                log_callback("   O lote foi interrompido para evitar erros em cascata.")
+                return False
+            except Exception as e:
+                log_callback(f"ERRO CRÍTICO AO INICIAR EDGE: {str(e)}")
+                return False
+        return False
 
     def _manter_apenas_melhor_candidato(self, caminhos_salvos: list[str], req: str) -> None:
         """Quando mais de um documento validou como orçamento pra mesma
@@ -344,14 +368,15 @@ class DownloadScraper:
         for i, el in enumerate(elementos, 1):
             if self.cancelado:
                 break
-            nome = await el.inner_text()
-
-            if self.contem_de_acordo(nome):
-                progress_down_callback(int((i / total) * 100))
-                continue
-
-            arquivo_temporario = os.path.join(self.pasta_download, f"temp_{nome}")
+            nome = "anexo desconhecido"
+            arquivo_temporario = None
             try:
+                nome = await el.inner_text()
+
+                if self.contem_de_acordo(nome):
+                    continue
+
+                arquivo_temporario = os.path.join(self.pasta_download, f"temp_{nome}")
                 async with page.expect_download(timeout=30000) as download_info:
                     await el.click()
                 download = await download_info.value
@@ -362,13 +387,18 @@ class DownloadScraper:
                     sucesso, _motivo = self.analisar_arquivo(arquivo_temporario, req, nome)
                     if sucesso:
                         salvos += 1
-            except Exception:
-                pass
+            except Exception as e:
+                if _alvo_playwright_foi_fechado(e):
+                    raise NavegadorFechadoError(
+                        f"O Edge foi fechado durante o download de '{nome}' da requisição #{req}."
+                    ) from e
+                self._extrair_texto_log(
+                    f"⚠️ Não foi possível baixar o anexo '{nome}' da requisição #{req}: {e}"
+                )
             finally:
-                if os.path.exists(arquivo_temporario):
+                if arquivo_temporario and os.path.exists(arquivo_temporario):
                     os.remove(arquivo_temporario)
-
-            progress_down_callback(int((i / total) * 100))
+                progress_down_callback(int((i / total) * 100))
 
         if salvos > 1:
             self._manter_apenas_melhor_candidato(self.arquivos_salvos_na_execucao[arquivos_antes:], req)
@@ -394,66 +424,101 @@ class DownloadScraper:
         for idx, req in enumerate(self.requisicoes, 1):
             if self.cancelado:
                 break
+            if req in self._requisicoes_concluidas:
+                progress_req_callback(int((idx / total_reqs) * 100))
+                continue
 
             url = f"{coupa_base_url.rstrip('/')}/requisition_headers/{req.strip()}"
             log_callback(f"📂 Processando requisição #{req}...")
 
-            try:
+            for tentativa in range(2):
+                if page.is_closed():
+                    try:
+                        page = await context.new_page()
+                    except Exception as e:
+                        raise NavegadorFechadoError(
+                            "O contexto do Edge foi encerrado e não pôde ser recuperado."
+                        ) from e
+
                 try:
-                    await page.goto(url, wait_until="load", timeout=60000)
-                except Exception:
-                    log_callback("⏳ Página demorou para carregar (possível tela de login)...")
+                    try:
+                        await page.goto(url, wait_until="load", timeout=60000)
+                    except Exception as e:
+                        if _alvo_playwright_foi_fechado(e):
+                            raise NavegadorFechadoError("O Edge foi fechado durante a navegação.") from e
+                        log_callback("⏳ Página demorou para carregar (possível tela de login)...")
 
-                if "login" in page.url.lower() or "sso" in page.url.lower():
-                    log_callback("⚠️ Realize o login no Edge se necessário...")
-                    await page.wait_for_url(
-                        lambda u: "login" not in u.lower() and "sso" not in u.lower(),
-                        timeout=300000,
-                    )
-                    await page.wait_for_load_state("networkidle", timeout=15000)
-                    await page.goto(url, wait_until="load", timeout=60000)
+                    if "login" in page.url.lower() or "sso" in page.url.lower():
+                        log_callback("⚠️ Realize o login no Edge se necessário...")
+                        await page.wait_for_url(
+                            lambda u: "login" not in u.lower() and "sso" not in u.lower(),
+                            timeout=300000,
+                        )
+                        await page.wait_for_load_state("networkidle", timeout=15000)
+                        await page.goto(url, wait_until="load", timeout=60000)
 
-                aba_carrinho = await page.query_selector("a:has-text('Itens do carrinho')")
-                if aba_carrinho:
-                    await aba_carrinho.click()
+                    aba_carrinho = await page.query_selector("a:has-text('Itens do carrinho')")
+                    if aba_carrinho:
+                        await aba_carrinho.click()
 
-                with contextlib.suppress(Exception):
-                    # timeout aqui só significa "sem anexos" - a contagem logo
-                    # abaixo (0 e 0) já deixa isso claro, sem precisar de um
-                    # log extra com o texto cru da exceção.
-                    await page.wait_for_selector(_SELETOR_ANEXOS, timeout=10000)
+                    with contextlib.suppress(Exception):
+                        # timeout aqui só significa "sem anexos" - a contagem logo
+                        # abaixo (0 e 0) já deixa isso claro, sem precisar de um
+                        # log extra com o texto cru da exceção.
+                        await page.wait_for_selector(_SELETOR_ANEXOS, timeout=10000)
 
-                todos_anexos = await page.query_selector_all(_SELETOR_ANEXOS)
-                anexos_carrinho, anexos_topo = await self._particionar_anexos_carrinho(page, todos_anexos)
-                log_callback(
-                    f"🔎 #{req}: {len(anexos_carrinho)} anexo(s) no item do carrinho, "
-                    f"{len(anexos_topo)} na seção de Anexos."
-                )
-
-                # 1. Anexo do item do carrinho primeiro - é sempre a versão mais
-                # atualizada do orçamento. Só cai para a seção de Anexos (abaixo)
-                # se o carrinho não tiver arquivo ou o arquivo não validar como orçamento.
-                arquivos_salvos_no_req = 0
-                if anexos_carrinho:
-                    arquivos_salvos_no_req = await self._baixar_e_validar_anexos(
-                        page, anexos_carrinho, req, progress_down_callback,
+                    todos_anexos = await page.query_selector_all(_SELETOR_ANEXOS)
+                    anexos_carrinho, anexos_topo = await self._particionar_anexos_carrinho(page, todos_anexos)
+                    log_callback(
+                        f"🔎 #{req}: {len(anexos_carrinho)} anexo(s) no item do carrinho, "
+                        f"{len(anexos_topo)} na seção de Anexos."
                     )
 
-                if arquivos_salvos_no_req == 0 and anexos_topo:
-                    arquivos_salvos_no_req = await self._baixar_e_validar_anexos(
-                        page, anexos_topo, req, progress_down_callback,
-                    )
+                    # 1. Anexo do item do carrinho primeiro - é sempre a versão mais
+                    # atualizada do orçamento. Só cai para a seção de Anexos (abaixo)
+                    # se o carrinho não tiver arquivo ou o arquivo não validar como orçamento.
+                    arquivos_salvos_no_req = 0
+                    if anexos_carrinho:
+                        arquivos_salvos_no_req = await self._baixar_e_validar_anexos(
+                            page, anexos_carrinho, req, progress_down_callback,
+                        )
 
-                if arquivos_salvos_no_req > 0:
-                    log_callback(f"✅ Orçamento salvo para a requisição #{req}.")
-                else:
-                    log_callback(f"❌ Nenhum orçamento válido encontrado para a requisição #{req}.")
-                    self.requisicoes_sem_arquivos.append(req)
+                    if arquivos_salvos_no_req == 0 and anexos_topo:
+                        # Um clique pode atualizar o DOM do Coupa. Não reutilize os
+                        # ElementHandles capturados antes da tentativa no carrinho.
+                        todos_anexos = await page.query_selector_all(_SELETOR_ANEXOS)
+                        _, anexos_topo = await self._particionar_anexos_carrinho(page, todos_anexos)
+                        arquivos_salvos_no_req = await self._baixar_e_validar_anexos(
+                            page, anexos_topo, req, progress_down_callback,
+                        )
 
-            except Exception as e:
-                log_callback(f"❌ Erro ao processar #{req}: {str(e)}")
-                log_callback(f"   Detalhes: {traceback.format_exc()}")
+                    if arquivos_salvos_no_req > 0:
+                        log_callback(f"✅ Orçamento salvo para a requisição #{req}.")
+                    else:
+                        log_callback(f"❌ Nenhum orçamento válido encontrado para a requisição #{req}.")
+                        self.requisicoes_sem_arquivos.append(req)
+                    break
+                except NavegadorFechadoError as e:
+                    if tentativa == 0:
+                        log_callback(f"⚠️ {e} Reabrindo a aba e repetindo a requisição #{req}...")
+                        continue
+                    raise NavegadorFechadoError(
+                        f"Falha persistente ao processar a requisição #{req}."
+                    ) from e
+                except Exception as e:
+                    if _alvo_playwright_foi_fechado(e):
+                        erro_fechamento = NavegadorFechadoError(
+                            f"O Edge foi fechado ao processar a requisição #{req}."
+                        )
+                        if tentativa == 0:
+                            log_callback(f"⚠️ {erro_fechamento} Reabrindo a aba e repetindo...")
+                            continue
+                        raise erro_fechamento from e
+                    log_callback(f"❌ Erro ao processar #{req}: {str(e)}")
+                    log_callback(f"   Detalhes: {traceback.format_exc()}")
+                    break
 
+            self._requisicoes_concluidas.add(req)
             progress_req_callback(int((idx / total_reqs) * 100))
 
         return not self.cancelado

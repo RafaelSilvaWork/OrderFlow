@@ -1,7 +1,14 @@
+import asyncio
+
 import fitz
+import pytest
 
 from modules.config import PALAVRAS_CHAVE
-from modules.download_scraper import DownloadScraper
+from modules.download_scraper import (
+    DownloadScraper,
+    NavegadorFechadoError,
+    _alvo_playwright_foi_fechado,
+)
 
 
 def _criar_pdf_sem_texto(caminho: str) -> None:
@@ -25,6 +32,31 @@ def test_construtor_ignora_espacos_e_strings_vazias():
     scraper = DownloadScraper(requisicoes=["  100  ", "100", "", "   ", "200"], pasta_download=".")
 
     assert scraper.requisicoes == ["100", "200"]
+
+
+def test_reconhece_target_closed_por_tipo_ou_mensagem():
+    TargetClosedError = type("TargetClosedError", (Exception,), {})
+
+    assert _alvo_playwright_foi_fechado(TargetClosedError("qualquer texto"))
+    assert _alvo_playwright_foi_fechado(
+        RuntimeError("Target page, context or browser has been closed")
+    )
+    assert not _alvo_playwright_foi_fechado(RuntimeError("timeout comum"))
+
+
+def test_download_nao_oculta_fechamento_do_edge():
+    class _ElementoComPaginaFechada:
+        async def inner_text(self):
+            raise RuntimeError("Target page, context or browser has been closed")
+
+    scraper = DownloadScraper(requisicoes=[], pasta_download=".")
+
+    with pytest.raises(NavegadorFechadoError, match="requisição #123"):
+        asyncio.run(
+            scraper._baixar_e_validar_anexos(
+                object(), [_ElementoComPaginaFechada()], "123", lambda _valor: None
+            )
+        )
 
 
 def test_analisar_arquivo_rejeita_de_acordo(tmp_path):
