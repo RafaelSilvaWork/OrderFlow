@@ -1,9 +1,12 @@
+import asyncio
 import contextlib
 import csv
 import os
 import re
 import shutil
+import ssl
 import traceback
+import urllib.request
 from collections.abc import Callable
 
 import fitz  # PyMuPDF (já está no requirements.txt)
@@ -46,6 +49,33 @@ def _alvo_playwright_foi_fechado(erro: Exception) -> bool:
         erro.__class__.__name__ == "TargetClosedError"
         or "target page, context or browser has been closed" in str(erro).lower()
     )
+
+
+def _baixar_com_http_do_sistema(
+    url: str,
+    caminho: str,
+    cookies: list[dict],
+    user_agent: str,
+) -> None:
+    """Baixa usando TLS/proxy do sistema, fora do runtime Node do Playwright."""
+    cookie_header = "; ".join(
+        f"{cookie['name']}={cookie['value']}"
+        for cookie in cookies
+        if cookie.get("name") and cookie.get("value") is not None
+    )
+    headers = {"User-Agent": user_agent, "Accept": "*/*"}
+    if cookie_header:
+        headers["Cookie"] = cookie_header
+    requisicao = urllib.request.Request(url, headers=headers)
+    contexto_tls = ssl.create_default_context()
+    with urllib.request.urlopen(requisicao, timeout=30, context=contexto_tls) as resposta:
+        if resposta.status < 200 or resposta.status >= 300:
+            raise RuntimeError(f"servidor respondeu HTTP {resposta.status}")
+        conteudo = resposta.read()
+    if not conteudo:
+        raise RuntimeError("servidor retornou um arquivo vazio")
+    with open(caminho, "wb") as arquivo:
+        arquivo.write(conteudo)
 
 
 class DownloadScraper:
@@ -410,31 +440,21 @@ class DownloadScraper:
                     with open(arquivo_temporario, "wb") as arquivo:
                         arquivo.write(conteudo)
                 except Exception as erro_http:
-                    # O APIRequestContext roda no runtime do Playwright e pode
-                    # não reconhecer a CA do proxy corporativo instalada no
-                    # Windows. Nesse caso específico, usa uma aba descartável
-                    # do Edge: ela herda sessão e confiança do sistema, sem
-                    # desativar a validação TLS nem arriscar a aba principal.
+                    # O APIRequestContext roda no Node do Playwright e pode não
+                    # reconhecer a CA corporativa instalada no Windows. Faz o
+                    # fallback por HTTP nativo, reutilizando somente os cookies
+                    # da sessão; nenhuma aba é aberta/clicada e TLS segue ativo.
                     if "self-signed certificate in certificate chain" not in str(erro_http).lower():
                         raise
-                    aba_download = await page.context.new_page()
-                    try:
-                        async with aba_download.expect_download(timeout=30000) as download_info:
-                            await aba_download.evaluate(
-                                """(url) => {
-                                    const link = document.createElement('a');
-                                    link.href = url;
-                                    link.style.display = 'none';
-                                    document.body.appendChild(link);
-                                    link.click();
-                                }""",
-                                url_anexo,
-                            )
-                        download = await download_info.value
-                        await download.save_as(arquivo_temporario)
-                    finally:
-                        if not aba_download.is_closed():
-                            await aba_download.close()
+                    cookies = await page.context.cookies(url_anexo)
+                    user_agent = await page.evaluate("navigator.userAgent")
+                    await asyncio.to_thread(
+                        _baixar_com_http_do_sistema,
+                        url_anexo,
+                        arquivo_temporario,
+                        cookies,
+                        user_agent,
+                    )
 
                 extensoes_suportadas = (".pdf", ".docx", ".xlsx", ".pptx", ".csv", ".txt")
                 if nome.lower().endswith(extensoes_suportadas):
