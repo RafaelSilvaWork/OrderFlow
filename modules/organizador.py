@@ -5,6 +5,8 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
+from modules import module_checkpoint
+
 
 def ler_cabecalho_planilha(planilha: Path) -> list[str]:
     """Lê só a linha de cabeçalho da planilha (.xlsx ou .csv), sem processar
@@ -46,6 +48,7 @@ class Organizador:
         col_po: str,
         col_fornecedor: str,
         logger,
+        resultados_anteriores: list[dict] | None = None,
     ):
         self.propostas = propostas
         self.pedidos = pedidos
@@ -55,6 +58,11 @@ class Organizador:
         self.col_po = col_po
         self.col_fornecedor = col_fornecedor
         self.logger = logger
+        resultados_anteriores = resultados_anteriores or []
+        self.linhas_ja_processadas = {item["linha"] for item in resultados_anteriores}
+        # Acumulador do checkpoint (ver modules/module_checkpoint.py) - comeca
+        # com o que ja veio de antes e cresce a cada linha concluida em executar().
+        self._resultados_checkpoint: list[dict] = list(resultados_anteriores)
 
     def log(self, mensagem: str) -> None:
         if callable(self.logger):
@@ -234,91 +242,105 @@ class Organizador:
         linhas_sem_fornecedor = 0
 
         for index, linha in enumerate(linhas, start=1):
-            rc, po, fornecedor = linha['rc'], linha['po'], linha['fornecedor']
-
-            if not fornecedor:
-                linhas_sem_fornecedor += 1
-                continue
-
-            # SEMPRE cria a pasta do fornecedor, mesmo que nenhum arquivo seja encontrado
-            try:
-                pasta_fornecedor = pasta_destino / self.sanitizar_nome(fornecedor)
-                pasta_nova = not pasta_fornecedor.exists()
-                pasta_fornecedor.mkdir(parents=True, exist_ok=True)
-                if pasta_nova:
-                    total_pastas_criadas += 1
-            except Exception as e:
-                total_erros += 1
-                erro_msg = f'Falha ao criar pasta para fornecedor "{fornecedor}": {str(e)}'
-                erros_detalhados.append((linha, erro_msg))
-                self.log(f'  ❌ [Linha {index}] {erro_msg}')
+            if index in self.linhas_ja_processadas:
                 continue
 
             try:
-                propostas_encontradas = (
-                    self.buscar_arquivo_por_codigo(arquivos_propostas, rc) if pasta_propostas else []
+                rc, po, fornecedor = linha['rc'], linha['po'], linha['fornecedor']
+
+                if not fornecedor:
+                    linhas_sem_fornecedor += 1
+                    continue
+
+                # SEMPRE cria a pasta do fornecedor, mesmo que nenhum arquivo seja encontrado
+                try:
+                    pasta_fornecedor = pasta_destino / self.sanitizar_nome(fornecedor)
+                    pasta_nova = not pasta_fornecedor.exists()
+                    pasta_fornecedor.mkdir(parents=True, exist_ok=True)
+                    if pasta_nova:
+                        total_pastas_criadas += 1
+                except Exception as e:
+                    total_erros += 1
+                    erro_msg = f'Falha ao criar pasta para fornecedor "{fornecedor}": {str(e)}'
+                    erros_detalhados.append((linha, erro_msg))
+                    self.log(f'  ❌ [Linha {index}] {erro_msg}')
+                    continue
+
+                try:
+                    propostas_encontradas = (
+                        self.buscar_arquivo_por_codigo(arquivos_propostas, rc) if pasta_propostas else []
+                    )
+                except Exception as e:
+                    propostas_encontradas = []
+                    erro_msg = f'Erro ao buscar propostas para RC="{rc}": {str(e)}'
+                    erros_detalhados.append((linha, erro_msg))
+                    self.log(f'  ⚠️ [Linha {index}] {erro_msg}')
+
+                try:
+                    pedidos_encontrados = self.buscar_arquivo_por_codigo(arquivos_pedidos, po) if pasta_pedidos else []
+                except Exception as e:
+                    pedidos_encontrados = []
+                    erro_msg = f'Erro ao buscar pedidos para PO="{po}": {str(e)}'
+                    erros_detalhados.append((linha, erro_msg))
+                    self.log(f'  ⚠️ [Linha {index}] {erro_msg}')
+
+                if not propostas_encontradas and not pedidos_encontrados:
+                    linhas_sem_nenhum_arquivo.append((rc, po, fornecedor))
+                    self.log(f'  ℹ️ [Linha {index}] Nenhum arquivo encontrado: RC="{rc}" PO="{po}" Forn="{fornecedor}"')
+                    continue
+
+                rc_sanitizada = self.sanitizar_nome(rc)
+                po_sanitizada = self.sanitizar_nome(po)
+
+                if pasta_propostas:
+                    for origem in propostas_encontradas:
+                        try:
+                            extensao = origem.suffix
+                            if po_sanitizada and po_sanitizada.lower() not in ['nan', 'sem_nome']:
+                                nome_destino = f"PROPOSTA - {rc_sanitizada} - {po_sanitizada}{extensao}"
+                            else:
+                                nome_destino = f"PROPOSTA - {rc_sanitizada}{extensao}"
+
+                            destino = pasta_fornecedor / nome_destino
+                            if str(destino).lower() in destinos_copiados:
+                                self.log(f'  ℹ️ Aviso: Ignorado (ja copiado): {origem.name} -> {nome_destino}')
+                                continue
+                            shutil.copy2(origem, destino)
+                            destinos_copiados.add(str(destino).lower())
+                            self.log(f'  ✅ Proposta: {origem.name} -> {nome_destino}')
+                            total_copiados += 1
+                        except Exception as e:
+                            total_erros += 1
+                            erro_msg = f'Falha ao copiar proposta "{origem.name}" para "{fornecedor}": {str(e)}'
+                            erros_detalhados.append((linha, erro_msg))
+                            self.log(f'  ❌ [Linha {index}] {erro_msg}')
+
+                if pasta_pedidos:
+                    for origem in pedidos_encontrados:
+                        try:
+                            destino = pasta_fornecedor / origem.name
+                            if str(destino).lower() in destinos_copiados:
+                                self.log(f'  ℹ️ Aviso: Ignorado (ja copiado): {origem.name} -> {pasta_fornecedor.name}')
+                                continue
+                            shutil.copy2(origem, destino)
+                            destinos_copiados.add(str(destino).lower())
+                            self.log(f'  ✅ Pedido: {origem.name} -> {pasta_fornecedor.name}')
+                            total_copiados += 1
+                        except Exception as e:
+                            total_erros += 1
+                            erro_msg = f'Falha ao copiar pedido "{origem.name}" para "{fornecedor}": {str(e)}'
+                            erros_detalhados.append((linha, erro_msg))
+                            self.log(f'  ❌ [Linha {index}] {erro_msg}')
+            finally:
+                # Roda ao fim de CADA linha, mesmo pulada/com erro - ver
+                # modules/module_checkpoint.py. So evita RECOPIAR arquivos ja
+                # copiados apos um crash (nada se perde sem isso, so demora mais).
+                self._resultados_checkpoint.append({"linha": index})
+                module_checkpoint.save(
+                    "organizador", list(range(1, len(linhas) + 1)), {}, self._resultados_checkpoint
                 )
-            except Exception as e:
-                propostas_encontradas = []
-                erro_msg = f'Erro ao buscar propostas para RC="{rc}": {str(e)}'
-                erros_detalhados.append((linha, erro_msg))
-                self.log(f'  ⚠️ [Linha {index}] {erro_msg}')
 
-            try:
-                pedidos_encontrados = self.buscar_arquivo_por_codigo(arquivos_pedidos, po) if pasta_pedidos else []
-            except Exception as e:
-                pedidos_encontrados = []
-                erro_msg = f'Erro ao buscar pedidos para PO="{po}": {str(e)}'
-                erros_detalhados.append((linha, erro_msg))
-                self.log(f'  ⚠️ [Linha {index}] {erro_msg}')
-
-            if not propostas_encontradas and not pedidos_encontrados:
-                linhas_sem_nenhum_arquivo.append((rc, po, fornecedor))
-                self.log(f'  ℹ️ [Linha {index}] Nenhum arquivo encontrado: RC="{rc}" PO="{po}" Forn="{fornecedor}"')
-                continue
-
-            rc_sanitizada = self.sanitizar_nome(rc)
-            po_sanitizada = self.sanitizar_nome(po)
-
-            if pasta_propostas:
-                for origem in propostas_encontradas:
-                    try:
-                        extensao = origem.suffix
-                        if po_sanitizada and po_sanitizada.lower() not in ['nan', 'sem_nome']:
-                            nome_destino = f"PROPOSTA - {rc_sanitizada} - {po_sanitizada}{extensao}"
-                        else:
-                            nome_destino = f"PROPOSTA - {rc_sanitizada}{extensao}"
-
-                        destino = pasta_fornecedor / nome_destino
-                        if str(destino).lower() in destinos_copiados:
-                            self.log(f'  ℹ️ Aviso: Ignorado (ja copiado): {origem.name} -> {nome_destino}')
-                            continue
-                        shutil.copy2(origem, destino)
-                        destinos_copiados.add(str(destino).lower())
-                        self.log(f'  ✅ Proposta: {origem.name} -> {nome_destino}')
-                        total_copiados += 1
-                    except Exception as e:
-                        total_erros += 1
-                        erro_msg = f'Falha ao copiar proposta "{origem.name}" para "{fornecedor}": {str(e)}'
-                        erros_detalhados.append((linha, erro_msg))
-                        self.log(f'  ❌ [Linha {index}] {erro_msg}')
-
-            if pasta_pedidos:
-                for origem in pedidos_encontrados:
-                    try:
-                        destino = pasta_fornecedor / origem.name
-                        if str(destino).lower() in destinos_copiados:
-                            self.log(f'  ℹ️ Aviso: Ignorado (ja copiado): {origem.name} -> {pasta_fornecedor.name}')
-                            continue
-                        shutil.copy2(origem, destino)
-                        destinos_copiados.add(str(destino).lower())
-                        self.log(f'  ✅ Pedido: {origem.name} -> {pasta_fornecedor.name}')
-                        total_copiados += 1
-                    except Exception as e:
-                        total_erros += 1
-                        erro_msg = f'Falha ao copiar pedido "{origem.name}" para "{fornecedor}": {str(e)}'
-                        erros_detalhados.append((linha, erro_msg))
-                        self.log(f'  ❌ [Linha {index}] {erro_msg}')
+        module_checkpoint.clear("organizador")
 
         self.log('')
         self.log('===== RESUMO DA EXECUCAO =====')

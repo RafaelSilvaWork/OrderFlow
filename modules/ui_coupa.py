@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from modules import module_checkpoint
 from modules.config import ProfileManager
 from modules.coupa_scraper import AutomationWorker
 from modules.execution_history import record_execution
@@ -36,6 +37,11 @@ class CoupaExtractorWidget(QWidget):
         self.worker = None
         self.last_results = []
         self._fluxo_em_andamento = False
+        # Preenchidos em open_edge_for_login quando o usuário opta por
+        # retomar um checkpoint de extração incompleta (ver
+        # modules/extraction_checkpoint.py) - None em uma extração normal.
+        self._resume_requisicoes_originais = None
+        self._resume_resultados_anteriores = None
         self.init_ui()
 
     def init_ui(self):
@@ -202,11 +208,60 @@ class CoupaExtractorWidget(QWidget):
                 campos.append("Destino")
             self.lbl_config_status.setText(f"Campos ativos: {', '.join(campos) if campos else 'Nenhum'}")
 
+    def _oferecer_retomada_checkpoint(self) -> None:
+        """Se existir uma extração incompleta (crash ou cancelamento
+        anterior - ver modules/module_checkpoint.py), pergunta se o
+        usuário quer continuar de onde parou.
+
+        Ao aceitar, pré-preenche a lista de requisições só com as que
+        ainda faltam e guarda o que já tinha sido extraído (ver uso de
+        self._resume_* em open_edge_for_login) para o resultado final
+        sair completo, não só com as requisições desta retomada.
+        """
+        checkpoint = module_checkpoint.load("extrator")
+        if not checkpoint:
+            return
+
+        pendentes = module_checkpoint.pending_items(checkpoint, "requisicao")
+        if not pendentes:
+            # Checkpoint sem nada pendente - não deveria acontecer (o
+            # próprio scraper limpa o checkpoint ao concluir tudo), mas se
+            # acontecer, só descarta em vez de perguntar à toa.
+            module_checkpoint.clear("extrator")
+            return
+
+        processadas = len(checkpoint.get("resultados", []))
+        resposta = QMessageBox.question(
+            self,
+            "Extração incompleta encontrada",
+            f"Encontramos uma extração que não chegou a terminar, com "
+            f"{processadas} resultado(s) já processado(s) e {len(pendentes)} "
+            f"requisição(ões) restante(s).\n\nDeseja continuar de onde parou?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if resposta != QMessageBox.StandardButton.Yes:
+            module_checkpoint.clear("extrator")
+            return
+
+        self.txt_req_list.setPlainText("\n".join(pendentes))
+        self._resume_requisicoes_originais = checkpoint.get("itens_originais", pendentes)
+        self._resume_resultados_anteriores = checkpoint.get("resultados", [])
+        self.log(
+            f"↩️ Retomando extração anterior: {processadas} já processada(s), "
+            f"{len(pendentes)} restante(s)."
+        )
+
     def open_edge_for_login(self):
         name = self.combo_profiles.currentText()
         if not name:
             self.txt_logs.append("Erro: Selecione um perfil.")
             return
+
+        self._resume_requisicoes_originais = None
+        self._resume_resultados_anteriores = None
+        self._oferecer_retomada_checkpoint()
+
         req_text = self.txt_req_list.toPlainText()
         requisicoes_brutas = [line.strip() for line in req_text.split("\n") if line.strip()]
 
@@ -290,7 +345,12 @@ class CoupaExtractorWidget(QWidget):
         self.chk_aba6.setEnabled(False)
         self.tbl_results.setRowCount(0)
 
-        self.worker = AutomationWorker(requisicoes, self.profiles[name].get("config", {}))
+        self.worker = AutomationWorker(
+            requisicoes,
+            self.profiles[name].get("config", {}),
+            requisicoes_originais=self._resume_requisicoes_originais,
+            resultados_anteriores=self._resume_resultados_anteriores,
+        )
         self.worker.log_signal.connect(self.log)  # Item 17: via UILogger em vez de txt_logs.append
         self.worker.edge_ready_signal.connect(self.edge_ready_for_login)
         self.worker.finished_signal.connect(self.automation_finished)

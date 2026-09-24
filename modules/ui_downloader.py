@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from modules import module_checkpoint
 from modules.download_scraper import DownloadWorker
 from modules.execution_history import record_execution
 from modules.fluxo_orquestrador import get_modo_automatico
@@ -33,6 +34,10 @@ class OrcamentoDownloaderWidget(QWidget):
         self.worker = None
         # Melhoria 5: ModoAutomatico é um singleton centralizado em
         # fluxo_orquestrador.get_modo_automatico() — as abas compartilham a MESMA instância.
+        # Preenchidos em _oferecer_retomada_checkpoint quando o usuário opta
+        # por retomar um checkpoint incompleto (ver modules/module_checkpoint.py).
+        self._resume_requisicoes_originais = None
+        self._resume_resultados_anteriores = None
         self.init_ui()
 
     def init_ui(self):
@@ -173,11 +178,56 @@ class OrcamentoDownloaderWidget(QWidget):
             return
         self.executar_downloads(modo_automatico=True)
 
+    def _oferecer_retomada_checkpoint(self) -> None:
+        """Se existir um download incompleto (crash ou cancelamento
+        anterior - ver modules/module_checkpoint.py), pergunta se o
+        usuário quer continuar de onde parou.
+
+        Só chamado no fluxo manual - no fluxo automático (encadeado a
+        partir da Aba 1) interromper com um diálogo quebraria a ideia de
+        rodar sem intervenção, então esse caso sempre recomeça do zero.
+        """
+        checkpoint = module_checkpoint.load("downloader")
+        if not checkpoint:
+            return
+
+        pendentes = module_checkpoint.pending_items(checkpoint, "requisicao")
+        if not pendentes:
+            module_checkpoint.clear("downloader")
+            return
+
+        processadas = len(checkpoint.get("resultados", []))
+        resposta = QMessageBox.question(
+            self,
+            "Download incompleto encontrado",
+            f"Encontramos um download que não chegou a terminar, com "
+            f"{processadas} resultado(s) já processado(s) e {len(pendentes)} "
+            f"requisição(ões) restante(s).\n\nDeseja continuar de onde parou?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if resposta != QMessageBox.StandardButton.Yes:
+            module_checkpoint.clear("downloader")
+            return
+
+        self.txt_req_list.setPlainText("\n".join(pendentes))
+        self._resume_requisicoes_originais = checkpoint.get("itens_originais", pendentes)
+        self._resume_resultados_anteriores = checkpoint.get("resultados", [])
+        self.log(
+            f"↩️ Retomando download anterior: {processadas} já processada(s), "
+            f"{len(pendentes)} restante(s)."
+        )
+
     def executar_downloads(self, modo_automatico: bool = False) -> None:
         if not self.pasta_download:
             if not modo_automatico:
                 QMessageBox.warning(self, "Erro", "Selecione uma pasta de destino antes de comecar!")
             return
+
+        self._resume_requisicoes_originais = None
+        self._resume_resultados_anteriores = None
+        if not modo_automatico:
+            self._oferecer_retomada_checkpoint()
 
         req_text = self.txt_req_list.toPlainText()
         requisicoes = [line.strip() for line in req_text.split("\n") if line.strip()]
@@ -206,7 +256,12 @@ class OrcamentoDownloaderWidget(QWidget):
             get_modo_automatico().desativar()
 
         self.log("\U0001f680 Iniciando processador de downloads em lote...")
-        self.worker = DownloadWorker(requisicoes, self.pasta_download)
+        self.worker = DownloadWorker(
+            requisicoes,
+            self.pasta_download,
+            requisicoes_originais=self._resume_requisicoes_originais,
+            resultados_anteriores=self._resume_resultados_anteriores,
+        )
         self.worker.log_signal.connect(self.log)
         self.worker.progress_req_signal.connect(self.bar_geral.setValue)
         self.worker.progress_down_signal.connect(self.bar_downloads.setValue)

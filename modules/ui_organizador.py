@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from modules import module_checkpoint
 from modules.execution_history import record_execution
 from modules.logger import UILogger
 from modules.organizador import Organizador, ler_cabecalho_planilha
@@ -29,6 +30,9 @@ class OrganizadorWidget(QWidget):
     def __init__(self, parent_framework):
         super().__init__()
         self.parent_fw = parent_framework
+        # Preenchido em _oferecer_retomada_checkpoint quando o usuario opta
+        # por retomar um checkpoint incompleto (ver modules/module_checkpoint.py).
+        self._resume_resultados_anteriores = None
         self.init_ui()
 
     def init_ui(self):
@@ -201,7 +205,50 @@ class OrganizadorWidget(QWidget):
             return True
         return Path(caminho).is_dir()
 
+    def _oferecer_retomada_checkpoint(self) -> None:
+        """Se existir uma organizacao incompleta (crash anterior - ver
+        modules/module_checkpoint.py), pergunta se o usuario quer continuar
+        de onde parou (pula as linhas da planilha ja processadas, evitando
+        recopiar arquivos que ja foram copiados).
+
+        So chamado no fluxo manual - no fluxo automatico (encadeado a
+        partir da Aba 1) interromper com um dialogo quebraria a ideia de
+        rodar sem intervencao, entao esse caso sempre recomeca do zero.
+        """
+        checkpoint = module_checkpoint.load("organizador")
+        if not checkpoint:
+            return
+
+        pendentes = module_checkpoint.pending_items(checkpoint, "linha")
+        if not pendentes:
+            module_checkpoint.clear("organizador")
+            return
+
+        processadas = len(checkpoint.get("resultados", []))
+        resposta = QMessageBox.question(
+            self,
+            "Organizacao incompleta encontrada",
+            f"Encontramos uma organizacao que nao chegou a terminar, com "
+            f"{processadas} linha(s) da planilha ja processada(s) e {len(pendentes)} "
+            "restante(s). Deseja continuar de onde parou?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if resposta != QMessageBox.StandardButton.Yes:
+            module_checkpoint.clear("organizador")
+            return
+
+        self._resume_resultados_anteriores = checkpoint.get("resultados", [])
+        self.log(
+            f"↩️ Retomando organizacao anterior: {processadas} linha(s) ja processada(s), "
+            f"{len(pendentes)} restante(s)."
+        )
+
     def processar(self, modo_automatico: bool = False) -> None:
+        self._resume_resultados_anteriores = None
+        if not modo_automatico:
+            self._oferecer_retomada_checkpoint()
+
         try:
             propostas = self._strip_path(self.ent_propostas.text())
             pedidos = self._strip_path(self.ent_pedidos.text())
@@ -222,7 +269,8 @@ class OrganizadorWidget(QWidget):
                 col_rc=self.cbo_col_rc.currentText().strip(),
                 col_po=self.cbo_col_po.currentText().strip(),
                 col_fornecedor=self.cbo_col_forn.currentText().strip(),
-                logger=self.log
+                logger=self.log,
+                resultados_anteriores=self._resume_resultados_anteriores,
             )
             organizador.executar()
 

@@ -1,8 +1,21 @@
 import asyncio
 import threading
 
+import pytest
+
+from modules import module_checkpoint
 from modules.config import MAX_TENTATIVAS
 from modules.coupa_scraper import CoupaScraper
+
+
+@pytest.fixture(autouse=True)
+def _checkpoint_isolado(tmp_path, monkeypatch):
+    """Isola o checkpoint de execução num diretório temporário, para os
+    testes não gravarem em %APPDATA% de verdade (ver
+    modules/module_checkpoint.py, salvo/limpo a cada requisição processada
+    em _extrair)."""
+    monkeypatch.setattr(module_checkpoint, "USER_DATA_DIR", tmp_path)
+
 
 _TIMEOUT_EXC_TEXT = (
     "Timeout 30000ms exceeded while navigating to "
@@ -213,3 +226,110 @@ def test_falha_nao_relacionada_a_rede_nao_aciona_retry(monkeypatch):
     assert page.goto_calls == 2
     assert resultado == [{"requisicao": "123", "erro": "Falha na extração: Element not found: .po-number"}]
     assert not any("abortando" in msg.lower() for msg in logs)
+
+
+def test_checkpoint_e_limpo_quando_extracao_termina_sem_abortar(monkeypatch):
+    """Loop passou por todas as requisições sem nenhum "break" (nem
+    cancelamento, nem erro de rede fatal) - checkpoint não faz mais falta."""
+    monkeypatch.setattr("modules.coupa_scraper.get_coupa_base_url", lambda: "https://empresa.coupahost.com")
+
+    page = _FakePage(goto_effects=[None, None])
+    context = _FakeContext(page)
+    scraper = _make_scraper()
+    logs = []
+
+    asyncio.run(scraper._extrair(context, logs.append, None, []))
+
+    assert module_checkpoint.load("extrator") is None
+
+
+def test_checkpoint_e_mantido_apos_abortar_por_erro_de_rede_fatal(monkeypatch):
+    """Erro de rede fatal aborta o lote via "break" - o checkpoint precisa
+    sobreviver pra uma retomada posterior, com a requisição já tentada
+    registrada nele."""
+    monkeypatch.setattr("modules.coupa_scraper.get_coupa_base_url", lambda: "https://empresa.coupahost.com")
+    monkeypatch.setattr("modules.coupa_scraper.ESPERA_ENTRE_TENTATIVAS", 0)
+
+    page = _FakePage(goto_effects=[None] + [_connection_refused_exc() for _ in range(MAX_TENTATIVAS)])
+    context = _FakeContext(page)
+    scraper = _make_scraper(requisicoes=["123", "456"])
+    logs = []
+
+    asyncio.run(scraper._extrair(context, logs.append, None, []))
+
+    checkpoint = module_checkpoint.load("extrator")
+    assert checkpoint is not None
+    assert checkpoint["itens_originais"] == ["123", "456"]
+    assert len(checkpoint["resultados"]) == 1
+    assert checkpoint["resultados"][0]["requisicao"] == "123"
+
+
+def test_checkpoint_e_mantido_quando_usuario_cancela_no_meio(monkeypatch):
+    monkeypatch.setattr("modules.coupa_scraper.get_coupa_base_url", lambda: "https://empresa.coupahost.com")
+
+    page = _FakePage(goto_effects=[None, None])
+    context = _FakeContext(page)
+    login_event = threading.Event()
+    login_event.set()
+    cancel_event = threading.Event()
+    scraper = CoupaScraper(
+        requisicoes=["123", "456"],
+        config_extrair={},
+        pause_event=None,
+        login_confirmation_event=login_event,
+        cancel_event=cancel_event,
+    )
+    logs = []
+
+    async def _extrair_e_cancelar_apos_primeira():
+        original_goto = page.goto
+
+        async def goto_e_cancela(*args, **kwargs):
+            resultado = await original_goto(*args, **kwargs)
+            if page.goto_calls == 2:  # home + 1a requisição já visitadas
+                cancel_event.set()
+            return resultado
+
+        page.goto = goto_e_cancela
+        return await scraper._extrair(context, logs.append, None, [])
+
+    asyncio.run(_extrair_e_cancelar_apos_primeira())
+
+    checkpoint = module_checkpoint.load("extrator")
+    assert checkpoint is not None
+    assert len(checkpoint["resultados"]) == 1
+
+
+def test_retomada_combina_resultados_anteriores_com_novos_e_limpa_checkpoint(monkeypatch):
+    """Simula uma retomada: requisicoes_originais/resultados_anteriores vêm
+    de um checkpoint carregado (ver module_checkpoint.pending_items e
+    _oferecer_retomada_checkpoint em ui_coupa.py) - o resultado final
+    precisa sair com tudo combinado, não só com o que foi (re)processado
+    nesta retomada."""
+    monkeypatch.setattr("modules.coupa_scraper.get_coupa_base_url", lambda: "https://empresa.coupahost.com")
+
+    page = _FakePage(goto_effects=[None, None])
+    context = _FakeContext(page)
+    login_event = threading.Event()
+    login_event.set()
+    resultados_anteriores = [{"requisicao": "123", "status": "Sem pedido emitido"}]
+    scraper = CoupaScraper(
+        requisicoes=["456"],
+        config_extrair={},
+        pause_event=None,
+        login_confirmation_event=login_event,
+        cancel_event=None,
+        requisicoes_originais=["123", "456"],
+        resultados_anteriores=resultados_anteriores,
+    )
+    logs = []
+
+    # Mimetiza o que CoupaScraper.run() faz antes de chamar _extrair: parte
+    # de extracted_data já preenchido com resultados_anteriores.
+    resultado = asyncio.run(scraper._extrair(context, logs.append, None, list(resultados_anteriores)))
+
+    assert resultado == [
+        {"requisicao": "123", "status": "Sem pedido emitido"},
+        {"requisicao": "456", "status": "Sem pedido emitido"},
+    ]
+    assert module_checkpoint.load("extrator") is None

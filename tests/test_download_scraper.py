@@ -4,12 +4,22 @@ import io
 import fitz
 import pytest
 
+from modules import module_checkpoint
 from modules.config import PALAVRAS_CHAVE
 from modules.download_scraper import (
     DownloadScraper,
     NavegadorFechadoError,
     _alvo_playwright_foi_fechado,
 )
+
+
+@pytest.fixture(autouse=True)
+def _checkpoint_isolado(tmp_path, monkeypatch):
+    """Isola o checkpoint de execução num diretório temporário, para os
+    testes não gravarem em %APPDATA% de verdade (ver
+    modules/module_checkpoint.py, salvo/limpo a cada requisição processada
+    em _processar)."""
+    monkeypatch.setattr(module_checkpoint, "USER_DATA_DIR", tmp_path)
 
 
 def _criar_pdf_sem_texto(caminho: str) -> None:
@@ -33,6 +43,35 @@ def test_construtor_ignora_espacos_e_strings_vazias():
     scraper = DownloadScraper(requisicoes=["  100  ", "100", "", "   ", "200"], pasta_download=".")
 
     assert scraper.requisicoes == ["100", "200"]
+
+
+def test_construtor_sem_retomada_usa_proprias_requisicoes_como_originais():
+    scraper = DownloadScraper(requisicoes=["100", "200"], pasta_download=".")
+
+    assert scraper.requisicoes_originais == ["100", "200"]
+    assert scraper.arquivos_salvos_na_execucao == []
+    assert scraper.requisicoes_sem_arquivos == []
+    assert scraper._resultados_checkpoint == []
+
+
+def test_construtor_com_retomada_reconstroi_estado_anterior():
+    resultados_anteriores = [
+        {"requisicao": "100", "status": "salvo"},
+        {"requisicao": "150", "status": "sem_arquivo"},
+    ]
+
+    scraper = DownloadScraper(
+        requisicoes=["200"],
+        pasta_download=".",
+        requisicoes_originais=["100", "150", "200"],
+        resultados_anteriores=resultados_anteriores,
+    )
+
+    assert scraper.requisicoes == ["200"]
+    assert scraper.requisicoes_originais == ["100", "150", "200"]
+    assert len(scraper.arquivos_salvos_na_execucao) == 1
+    assert scraper.requisicoes_sem_arquivos == ["150"]
+    assert scraper._resultados_checkpoint == resultados_anteriores
 
 
 def test_reconhece_target_closed_por_tipo_ou_mensagem():

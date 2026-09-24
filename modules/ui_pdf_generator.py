@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from modules import module_checkpoint
 from modules.execution_history import record_execution
 from modules.fluxo_orquestrador import get_modo_automatico
 from modules.logger import UILogger
@@ -42,6 +43,10 @@ class PedidoPdfGeneratorWidget(QWidget):
         self._user_editou_manualmente: bool = False
         # Melhoria 5: ModoAutomatico é um singleton centralizado em
         # fluxo_orquestrador.get_modo_automatico() — as abas compartilham a MESMA instância.
+        # Preenchidos em _oferecer_retomada_checkpoint quando o usuário opta
+        # por retomar um checkpoint incompleto (ver modules/module_checkpoint.py).
+        self._resume_pedidos_originais = None
+        self._resume_resultados_anteriores = None
         self.init_ui()
 
     def init_ui(self) -> None:
@@ -183,6 +188,51 @@ class PedidoPdfGeneratorWidget(QWidget):
             return
         self.iniciar_geracao(modo_automatico=True)
 
+    def _oferecer_retomada_checkpoint(self) -> None:
+        """Se existir uma geracao de PDF incompleta (crash ou cancelamento
+        anterior - ver modules/module_checkpoint.py), pergunta se o
+        usuario quer continuar de onde parou.
+
+        So chamado no fluxo manual - no fluxo automatico (encadeado a
+        partir da Aba 1) interromper com um dialogo quebraria a ideia de
+        rodar sem intervencao, entao esse caso sempre recomeca do zero.
+        """
+        checkpoint = module_checkpoint.load("pdf")
+        if not checkpoint:
+            return
+
+        pendentes = module_checkpoint.pending_items(checkpoint, "pedido")
+        if not pendentes:
+            module_checkpoint.clear("pdf")
+            return
+
+        processados = len(checkpoint.get("resultados", []))
+        resposta = QMessageBox.question(
+            self,
+            "Geracao de PDF incompleta encontrada",
+            f"Encontramos uma geracao de PDF que nao chegou a terminar, com "
+            f"{processados} pedido(s) ja processado(s) e {len(pendentes)} pedido(s) restante(s). "
+            "Deseja continuar de onde parou?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if resposta != QMessageBox.StandardButton.Yes:
+            module_checkpoint.clear("pdf")
+            return
+
+        requisicoes_por_pedido = checkpoint.get("extra", {}).get("requisicoes_por_pedido", {})
+        linhas: list[str] = []
+        for pedido in pendentes:
+            reqs = requisicoes_por_pedido.get(pedido) or [""]
+            linhas.extend(f"{pedido}	{req}" for req in reqs)
+        self.txt_pedidos.setPlainText(chr(10).join(linhas))
+        self._resume_pedidos_originais = checkpoint.get("itens_originais", pendentes)
+        self._resume_resultados_anteriores = checkpoint.get("resultados", [])
+        self.log(
+            f"↩️ Retomando geracao de PDF anterior: {processados} ja processado(s), "
+            f"{len(pendentes)} restante(s)."
+        )
+
     def iniciar_geracao(self, modo_automatico: bool = False) -> None:
         if not self.pasta_saida:
             # Sem essa checagem, PdfGeneratorWorker recebia pasta_saida="" e
@@ -195,6 +245,11 @@ class PedidoPdfGeneratorWidget(QWidget):
                     "Selecione a pasta de destino antes de iniciar a geração de PDFs.",
                 )
             return
+
+        self._resume_pedidos_originais = None
+        self._resume_resultados_anteriores = None
+        if not modo_automatico:
+            self._oferecer_retomada_checkpoint()
 
         texto = self.txt_pedidos.toPlainText()
 
@@ -251,7 +306,13 @@ class PedidoPdfGeneratorWidget(QWidget):
             get_modo_automatico().desativar()
 
         self.log("🚀 Iniciando geracao de PDFs em lote...")
-        self.worker = PdfGeneratorWorker(pedidos, self.pasta_saida, requisicoes_por_pedido)
+        self.worker = PdfGeneratorWorker(
+            pedidos,
+            self.pasta_saida,
+            requisicoes_por_pedido,
+            pedidos_originais=self._resume_pedidos_originais,
+            resultados_anteriores=self._resume_resultados_anteriores,
+        )
         self.worker.log_signal.connect(self.log)
         self.worker.progress_signal.connect(self.bar_geral.setValue)
         self.worker.finished_signal.connect(self.processo_finalizado)

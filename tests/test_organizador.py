@@ -2,7 +2,15 @@ from pathlib import Path
 
 import pytest
 
+from modules import module_checkpoint
 from modules.organizador import Organizador, ler_cabecalho_planilha
+
+
+@pytest.fixture(autouse=True)
+def _checkpoint_isolado(tmp_path, monkeypatch):
+    """Isola o checkpoint de execucao num diretorio temporario (ver
+    modules/module_checkpoint.py)."""
+    monkeypatch.setattr(module_checkpoint, "USER_DATA_DIR", tmp_path)
 
 
 @pytest.fixture
@@ -106,3 +114,65 @@ def test_ler_cabecalho_planilha_formato_invalido_gera_erro(tmp_path):
     planilha.write_text("RC,PO,FORNECEDOR\n", encoding="utf-8")
     with pytest.raises(ValueError):
         ler_cabecalho_planilha(planilha)
+
+def test_executar_limpa_checkpoint_ao_concluir_normalmente(setup_dirs, tmp_path):
+    from modules import module_checkpoint
+
+    propostas, pedidos, destino = setup_dirs
+    planilha = tmp_path / "plan.xlsx"
+    make_xlsx(planilha, [["RC001", "PO001", "Fornecedor A"]])
+    (propostas / "RC001_orcamento.pdf").write_bytes(b"pdf")
+
+    org = Organizador(
+        propostas=str(propostas), pedidos="", destino=str(destino), planilha=str(planilha),
+        col_rc="RC", col_po="PO", col_fornecedor="FORNECEDOR", logger=lambda m: None,
+    )
+    org.executar()
+
+    assert module_checkpoint.load("organizador") is None
+
+
+def test_executar_grava_checkpoint_com_todas_as_linhas_antes_de_limpar(setup_dirs, tmp_path, monkeypatch):
+    from modules import module_checkpoint
+
+    propostas, pedidos, destino = setup_dirs
+    planilha = tmp_path / "plan.xlsx"
+    make_xlsx(planilha, [["RC001", "PO001", "Fornecedor A"], ["RC002", "PO002", "Fornecedor B"]])
+    (propostas / "RC001_orcamento.pdf").write_bytes(b"pdf")
+    (propostas / "RC002_orcamento.pdf").write_bytes(b"pdf")
+
+    capturado = {}
+
+    def _capturar_antes_de_limpar(module_key):
+        capturado["checkpoint"] = module_checkpoint.load(module_key)
+
+    monkeypatch.setattr(module_checkpoint, "clear", _capturar_antes_de_limpar)
+
+    org = Organizador(
+        propostas=str(propostas), pedidos="", destino=str(destino), planilha=str(planilha),
+        col_rc="RC", col_po="PO", col_fornecedor="FORNECEDOR", logger=lambda m: None,
+    )
+    org.executar()
+
+    assert capturado["checkpoint"]["itens_originais"] == [1, 2]
+    assert [item["linha"] for item in capturado["checkpoint"]["resultados"]] == [1, 2]
+
+
+def test_resultados_anteriores_pula_linhas_ja_processadas(setup_dirs, tmp_path):
+    propostas, pedidos, destino = setup_dirs
+    planilha = tmp_path / "plan.xlsx"
+    make_xlsx(planilha, [["RC001", "PO001", "Fornecedor A"], ["RC002", "PO002", "Fornecedor B"]])
+    (propostas / "RC001_orcamento.pdf").write_bytes(b"pdf")
+    (propostas / "RC002_orcamento.pdf").write_bytes(b"pdf")
+
+    org = Organizador(
+        propostas=str(propostas), pedidos="", destino=str(destino), planilha=str(planilha),
+        col_rc="RC", col_po="PO", col_fornecedor="FORNECEDOR", logger=lambda m: None,
+        resultados_anteriores=[{"linha": 1}],
+    )
+    org.executar()
+
+    # Linha 1 (Fornecedor A) foi pulada - a pasta nem chega a ser criada.
+    assert not (destino / "Fornecedor A").exists()
+    assert (destino / "Fornecedor B").is_dir()
+

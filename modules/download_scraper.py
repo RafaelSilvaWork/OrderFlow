@@ -15,6 +15,7 @@ from openpyxl import load_workbook
 from pptx import Presentation
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from modules import module_checkpoint
 from modules.config import (
     PALAVRAS_CHAVE,
     PERFIL_EDGE_DOWNLOAD,
@@ -79,15 +80,43 @@ def _baixar_com_http_do_sistema(
 
 
 class DownloadScraper:
-    def __init__(self, requisicoes: list[str], pasta_download: str):
+    def __init__(
+        self,
+        requisicoes: list[str],
+        pasta_download: str,
+        requisicoes_originais: list[str] | None = None,
+        resultados_anteriores: list[dict] | None = None,
+    ):
         # Nunca processa a mesma requisição duas vezes (ex: uma requisição com
         # 2 pedidos aparece 2x na lista importada da Aba 1) - baixar a mesma
         # página/anexo de novo é desperdício e ainda gera arquivo duplicado
         # (analisar_arquivo salva o 2º como "REQ_1.pdf").
         self.requisicoes = list(dict.fromkeys(r.strip() for r in requisicoes if r.strip()))
         self.pasta_download = pasta_download
-        self.arquivos_salvos_na_execucao: list[str] = []
-        self.requisicoes_sem_arquivos: list[str] = []
+        # requisicoes_originais/resultados_anteriores só vêm preenchidos
+        # numa RETOMADA de checkpoint (ver modules/module_checkpoint.py e
+        # _oferecer_retomada_checkpoint em ui_downloader.py) - "requisicoes"
+        # já é só o que falta processar; o checkpoint continua precisando
+        # do conjunto original completo e do que já tinha sido concluído
+        # antes do crash/cancelamento, pra combinar no resultado final.
+        self.requisicoes_originais = (
+            requisicoes_originais if requisicoes_originais is not None else self.requisicoes
+        )
+        resultados_anteriores = resultados_anteriores or []
+        self.arquivos_salvos_na_execucao: list[str] = [
+            f"(salvo antes de uma interrupção anterior - requisição #{item.get('requisicao')})"
+            for item in resultados_anteriores
+            if item.get("status") == "salvo"
+        ]
+        self.requisicoes_sem_arquivos: list[str] = [
+            str(item.get("requisicao", "")) for item in resultados_anteriores if item.get("status") == "sem_arquivo"
+        ]
+        # Acumulador do checkpoint (ver modules/module_checkpoint.py) - vive
+        # no self porque _processar pode ser chamado mais de uma vez dentro
+        # do mesmo run() (retry automático após o Edge fechar, ver
+        # NavegadorFechadoError), e cada chamada precisa continuar somando
+        # em cima do que já foi salvo, não recomeçar do zero.
+        self._resultados_checkpoint: list[dict] = list(resultados_anteriores)
         self._requisicoes_concluidas: set[str] = set()
         self.cancelado = False
         self._log_callback: Callable[[str], None] | None = None
@@ -505,6 +534,7 @@ class DownloadScraper:
             url = f"{coupa_base_url.rstrip('/')}/requisition_headers/{req.strip()}"
             log_callback(f"📂 Processando requisição #{req}...")
 
+            status_req = "erro"
             for tentativa in range(2):
                 if page.is_closed():
                     try:
@@ -568,9 +598,11 @@ class DownloadScraper:
 
                     if arquivos_salvos_no_req > 0:
                         log_callback(f"✅ Orçamento salvo para a requisição #{req}.")
+                        status_req = "salvo"
                     else:
                         log_callback(f"❌ Nenhum orçamento válido encontrado para a requisição #{req}.")
                         self.requisicoes_sem_arquivos.append(req)
+                        status_req = "sem_arquivo"
                     break
                 except NavegadorFechadoError as e:
                     if tentativa == 0:
@@ -593,7 +625,16 @@ class DownloadScraper:
                     break
 
             self._requisicoes_concluidas.add(req)
+            self._resultados_checkpoint.append({"requisicao": req, "status": status_req})
+            module_checkpoint.save("downloader", self.requisicoes_originais, {}, self._resultados_checkpoint)
             progress_req_callback(int((idx / total_reqs) * 100))
+        else:
+            # "else" do for: só roda se o loop terminou SEM nenhum "break"
+            # (cancelamento) - erro de rede fatal aqui sai por EXCEÇÃO (ver
+            # NavegadorFechadoError persistente acima), não por "break", e
+            # nesse caso o checkpoint também precisa ficar de propósito
+            # para a retomada (a exceção já pula este "else" sozinha).
+            module_checkpoint.clear("downloader")
 
         return not self.cancelado
 
@@ -604,9 +645,17 @@ class DownloadWorker(QThread):
     progress_down_signal = pyqtSignal(int)
     finished_signal = pyqtSignal(bool, list, list)
 
-    def __init__(self, requisicoes: list[str], pasta_download: str):
+    def __init__(
+        self,
+        requisicoes: list[str],
+        pasta_download: str,
+        requisicoes_originais: list[str] | None = None,
+        resultados_anteriores: list[dict] | None = None,
+    ):
         super().__init__()
-        self.scraper = DownloadScraper(requisicoes, pasta_download)
+        self.scraper = DownloadScraper(
+            requisicoes, pasta_download, requisicoes_originais, resultados_anteriores
+        )
         # Melhoria 8: expõe o log_callback ao scraper para que extrair_texto
         # possa reportar erros via UI em vez de print().
         self.scraper._log_callback = self.log_signal.emit

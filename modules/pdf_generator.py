@@ -6,6 +6,7 @@ from pathlib import Path
 import pandas as pd
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from modules import module_checkpoint
 from modules.config import (
     ESPERA_ENTRE_TENTATIVAS,
     MARGENS_IMPRESSAO,
@@ -29,16 +30,41 @@ class PdfGeneratorWorker(QThread):
         pedidos: list[str],
         pasta_saida: str,
         requisicoes_por_pedido: dict[str, list[str]] | None = None,
+        pedidos_originais: list[str] | None = None,
+        resultados_anteriores: list[dict] | None = None,
     ):
         super().__init__()
         self.pedidos = pedidos
         self.pasta_saida = Path(pasta_saida)
         self.requisicoes_por_pedido = requisicoes_por_pedido or {}
         self.cancelado = False
+        # pedidos_originais/resultados_anteriores só vêm preenchidos numa
+        # RETOMADA de checkpoint (ver modules/module_checkpoint.py e
+        # _oferecer_retomada_checkpoint em ui_pdf_generator.py) - "pedidos"
+        # já é só o que falta gerar; o checkpoint continua precisando do
+        # conjunto original completo e do que já tinha sido gerado antes do
+        # crash/cancelamento, pra combinar no relatório e no resultado final.
+        self.pedidos_originais = pedidos_originais if pedidos_originais is not None else pedidos
+        resultados_anteriores = resultados_anteriores or []
+        self._resultados_anteriores_dict = {
+            item["pedido"]: {
+                "status": "Sucesso" if item.get("status") == "sucesso" else "Erro",
+                "detalhe": item.get("detalhe", ""),
+            }
+            for item in resultados_anteriores
+        }
+        self._contagem_anterior = {
+            "sucesso": sum(1 for item in resultados_anteriores if item.get("status") == "sucesso"),
+            "sem_documento": sum(1 for item in resultados_anteriores if item.get("status") == "sem_documento"),
+            "falha": sum(1 for item in resultados_anteriores if item.get("status") == "falha"),
+        }
+        # Acumulador do checkpoint - começa com o que já veio de antes e
+        # cresce a cada pedido concluído nesta execução (ver run()).
+        self._resultados_checkpoint: list[dict] = list(resultados_anteriores)
 
     def gerar_relatorio(self, resultados: dict[str, dict[str, str]]) -> Path:
         linhas = []
-        for pedido in self.pedidos:
+        for pedido in self.pedidos_originais:
             resultado = resultados.get(pedido, {"status": "Cancelado", "detalhe": "Não processado"})
             requisicoes = self.requisicoes_por_pedido.get(pedido) or ["Não informada"]
             for requisicao in requisicoes:
@@ -69,7 +95,7 @@ class PdfGeneratorWorker(QThread):
         self.pasta_saida.mkdir(parents=True, exist_ok=True)
 
         sucesso, sem_documento, falha = [], [], []
-        resultados = {}
+        resultados = dict(self._resultados_anteriores_dict)
         total = len(self.pedidos)
 
         # Aponta para o mesmo perfil de download para reaproveitar a sessão/cookies logados
@@ -128,6 +154,7 @@ class PdfGeneratorWorker(QThread):
                     url_print = get_url_base_impressao_pdf(ped)
                     self.log_signal.emit(f"📄 Abrindo leiaute de impressão para o Pedido #{ped}...")
 
+                    status_checkpoint, detalhe_checkpoint = "falha", ""
                     try:
                         page.goto(url_print, wait_until="domcontentloaded", timeout=45000)
 
@@ -169,6 +196,7 @@ class PdfGeneratorWorker(QThread):
                                 "status": "Sucesso",
                                 "detalhe": "PDF gerado com sucesso",
                             }
+                            status_checkpoint, detalhe_checkpoint = "sucesso", "PDF gerado com sucesso"
                         else:
                             self.log_signal.emit(f"⚠️ Pulado: Pedido {ped} ainda está em processamento interno.")
                             sem_documento.append(ped)
@@ -176,19 +204,45 @@ class PdfGeneratorWorker(QThread):
                                 "status": "Erro",
                                 "detalhe": "Documento ainda em processamento interno",
                             }
+                            status_checkpoint = "sem_documento"
+                            detalhe_checkpoint = "Documento ainda em processamento interno"
 
                     except Exception as e:
                         self.log_signal.emit(f"❌ Falha no processamento do Pedido #{ped}: {str(e)}")
                         falha.append(ped)
                         resultados[ped] = {"status": "Erro", "detalhe": str(e)}
+                        status_checkpoint, detalhe_checkpoint = "falha", str(e)
+
+                    finally:
+                        # Roda ao fim de CADA pedido, independente do
+                        # resultado - ver modules/module_checkpoint.py. Sem
+                        # isso, um crash no meio de um lote longo perdia
+                        # tudo o que já tinha sido gerado até ali.
+                        self._resultados_checkpoint.append(
+                            {"pedido": ped, "status": status_checkpoint, "detalhe": detalhe_checkpoint}
+                        )
+                        module_checkpoint.save(
+                            "pdf",
+                            self.pedidos_originais,
+                            {"requisicoes_por_pedido": self.requisicoes_por_pedido},
+                            self._resultados_checkpoint,
+                        )
 
                     self.progress_signal.emit(int((i / total) * 100))
+                else:
+                    # "else" do for: só roda se o loop terminou sem "break"
+                    # (cancelamento) - passou por todos os pedidos pendentes,
+                    # o checkpoint cumpriu seu papel.
+                    module_checkpoint.clear("pdf")
 
             relatorio = self.gerar_relatorio(resultados)
             self.log_signal.emit(f"📊 Relatório salvo em: {relatorio}")
+            total_sucesso = len(sucesso) + self._contagem_anterior["sucesso"]
+            total_sem_documento = len(sem_documento) + self._contagem_anterior["sem_documento"]
+            total_falha = len(falha) + self._contagem_anterior["falha"]
             resumo = (
-                f"Processo concluído: {len(sucesso)} Sucesso(s) | {len(sem_documento)} Sem Doc | "
-                f"{len(falha)} Falha(s). Relatório: {relatorio.name}"
+                f"Processo concluído: {total_sucesso} Sucesso(s) | {total_sem_documento} Sem Doc | "
+                f"{total_falha} Falha(s). Relatório: {relatorio.name}"
             )
             self.finished_signal.emit(resumo)
 

@@ -1,8 +1,9 @@
 from unittest.mock import patch
 
 import pytest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from modules import module_checkpoint
 from modules.coupa_scraper import AutomationWorker
 from modules.ui_coupa import CoupaExtractorWidget
 
@@ -17,6 +18,14 @@ def widget(qt_app, tmp_path):
     # Isola de coupa_profiles.json real (dados sensíveis do usuário).
     with patch("modules.config.CONFIG_FILE", tmp_path / "perfis_teste.json"):
         return CoupaExtractorWidget(parent_framework=None)
+
+
+@pytest.fixture(autouse=True)
+def _checkpoint_isolado(tmp_path, monkeypatch):
+    """Isola o checkpoint de execução num diretório temporário (ver
+    modules/module_checkpoint.py, consultado no início de
+    open_edge_for_login)."""
+    monkeypatch.setattr(module_checkpoint, "USER_DATA_DIR", tmp_path)
 
 
 def test_load_selected_profile_lista_campos_ativos(widget):
@@ -158,3 +167,67 @@ def test_on_progress_agenda_timer_ao_completar(widget):
 
     assert widget._progress_hide_timer is not None
     assert widget._progress_hide_timer.isSingleShot() is True
+
+
+def test_open_edge_for_login_sem_checkpoint_nao_pergunta_nada(widget, monkeypatch):
+    perguntou = []
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: perguntou.append(1))
+    monkeypatch.setattr(AutomationWorker, "start", lambda self: None)
+    widget.profiles = {"Perfil A": {"config": {}}}
+    widget.combo_profiles.clear()
+    widget.combo_profiles.addItem("Perfil A")
+    widget.txt_req_list.setPlainText("111")
+
+    widget.open_edge_for_login()
+
+    assert perguntou == []
+    assert widget.worker.requisicoes_originais is None
+    assert widget.worker.resultados_anteriores is None
+
+
+def test_oferecer_retomada_aceita_preenche_lista_e_guarda_estado(widget, monkeypatch):
+    module_checkpoint.save(
+        "extrator",
+        ["111", "222", "333"],
+        {},
+        [{"requisicao": "111", "status": "Sem pedido emitido"}],
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+
+    widget._oferecer_retomada_checkpoint()
+
+    assert widget.txt_req_list.toPlainText() == "222\n333"
+    assert widget._resume_requisicoes_originais == ["111", "222", "333"]
+    assert widget._resume_resultados_anteriores == [{"requisicao": "111", "status": "Sem pedido emitido"}]
+    assert "Retomando" in widget.txt_logs.toPlainText()
+
+
+def test_oferecer_retomada_recusa_descarta_checkpoint(widget, monkeypatch):
+    module_checkpoint.save("extrator", ["111", "222"], {}, [])
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.No)
+
+    widget._oferecer_retomada_checkpoint()
+
+    assert widget._resume_requisicoes_originais is None
+    assert widget._resume_resultados_anteriores is None
+    assert module_checkpoint.load("extrator") is None
+
+
+def test_open_edge_for_login_retomada_passa_estado_pro_worker(widget, monkeypatch):
+    module_checkpoint.save(
+        "extrator",
+        ["111", "222"],
+        {},
+        [{"requisicao": "111", "status": "Sem pedido emitido"}],
+    )
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    monkeypatch.setattr(AutomationWorker, "start", lambda self: None)
+    widget.profiles = {"Perfil A": {"config": {}}}
+    widget.combo_profiles.clear()
+    widget.combo_profiles.addItem("Perfil A")
+
+    widget.open_edge_for_login()
+
+    assert widget.worker.requisicoes == ["222"]
+    assert widget.worker.requisicoes_originais == ["111", "222"]
+    assert widget.worker.resultados_anteriores == [{"requisicao": "111", "status": "Sem pedido emitido"}]

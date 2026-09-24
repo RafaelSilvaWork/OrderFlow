@@ -7,6 +7,7 @@ from typing import Any
 
 from PyQt6.QtCore import QThread, pyqtSignal
 
+from modules import module_checkpoint
 from modules.config import (
     ESPERA_ENTRE_TENTATIVAS,
     MAX_TENTATIVAS,
@@ -106,12 +107,25 @@ class CoupaScraper:
         pause_event=None,
         login_confirmation_event=None,
         cancel_event=None,
+        requisicoes_originais: list[str] | None = None,
+        resultados_anteriores: list[dict[str, Any]] | None = None,
     ):
         self.requisicoes = requisicoes
         self.config_extrair = config_extrair
         self.pause_event = pause_event
         self.login_confirmation_event = login_confirmation_event
         self.cancel_event = cancel_event
+        # requisicoes_originais/resultados_anteriores só vêm preenchidos
+        # quando esta é uma RETOMADA de um checkpoint (ver
+        # modules/extraction_checkpoint.py e open_edge_for_login em
+        # ui_coupa.py) - nesse caso "requisicoes" já é só o que falta
+        # processar, mas o checkpoint continua precisando do conjunto
+        # ORIGINAL completo (para saber quando está tudo pronto) e do que
+        # já tinha sido extraído antes do crash/cancelamento.
+        self.requisicoes_originais = (
+            requisicoes_originais if requisicoes_originais is not None else requisicoes
+        )
+        self.resultados_anteriores = resultados_anteriores if resultados_anteriores is not None else []
 
     async def aguardar_retomada(self, log_callback) -> bool:
         """Aguarda retomada. Sleep reduzido de 0.5s para 0.1s (5x mais responsivo).
@@ -234,7 +248,11 @@ class CoupaScraper:
                     await pagina_pedido.close()
 
     async def run(self, log_callback, edge_ready_callback=None) -> list[dict[str, Any]]:
-        extracted_data: list[dict[str, Any]] = []
+        # Pré-carregado com o que já tinha sido extraído antes de um
+        # crash/cancelamento (retomada de checkpoint) - numa extração
+        # normal (sem retomada), resultados_anteriores é [] e isso não
+        # muda nada.
+        extracted_data: list[dict[str, Any]] = list(self.resultados_anteriores)
         log_callback("⚡ Iniciando Edge em modo rápido...")
 
         caminho_edge = resolve_edge_executable()
@@ -536,6 +554,22 @@ class CoupaScraper:
                     log_callback(f"Erro na requisição #{req}: {str(e)}")
                     extracted_data.append({"requisicao": req, "erro": f"Falha na extração: {str(e)}"})
 
+            finally:
+                # Roda ao fim de CADA requisição (sucesso, sem pedido ou
+                # erro), inclusive quando "continue"/"break" é usado logo
+                # acima - ver modules/module_checkpoint.py. Sem isso, um
+                # crash no meio de uma extração longa perdia tudo o que já
+                # tinha sido processado até ali.
+                module_checkpoint.save("extrator", self.requisicoes_originais, self.config_extrair, extracted_data)
+
+        else:
+            # "else" do for: só roda se o loop terminou SEM nenhum "break"
+            # (ou seja, passou por todas as requisicoes pendentes) - nesse
+            # caso o checkpoint cumpriu seu papel e pode ser descartado.
+            # Com "break" (cancelamento ou erro de rede fatal para o lote),
+            # o checkpoint fica de propósito, pronto para uma retomada.
+            module_checkpoint.clear("extrator")
+
         # Sem isso, o log nunca mostrava um resumo final de sucesso - o
         # AutomationWorker (ver log_with_progress) já procurava por uma
         # mensagem com "extração" + "concluída" pra levar a barra de
@@ -561,10 +595,18 @@ class AutomationWorker(QThread):
     finished_signal = pyqtSignal(list)
     progress_signal = pyqtSignal(int)  # Item 21: Sinal de progresso (0-100)
 
-    def __init__(self, requisicoes: list[str], config_extrair: dict[str, bool]):
+    def __init__(
+        self,
+        requisicoes: list[str],
+        config_extrair: dict[str, bool],
+        requisicoes_originais: list[str] | None = None,
+        resultados_anteriores: list[dict] | None = None,
+    ):
         super().__init__()
         self.requisicoes = requisicoes
         self.config_extrair = config_extrair
+        self.requisicoes_originais = requisicoes_originais
+        self.resultados_anteriores = resultados_anteriores
         self.pause_event = threading.Event()
         self.login_confirmation_event = threading.Event()
         self.cancel_event = threading.Event()
@@ -596,6 +638,8 @@ class AutomationWorker(QThread):
                 self.pause_event,
                 self.login_confirmation_event,
                 self.cancel_event,
+                requisicoes_originais=self.requisicoes_originais,
+                resultados_anteriores=self.resultados_anteriores,
             )
 
             def log_with_progress(msg: str):
