@@ -29,6 +29,7 @@ from modules.config import (
     get_power_automate_url,
 )
 from modules.email_sender import EmailWorker
+from modules.execution_history import record_execution
 from modules.fluxo_orquestrador import get_modo_automatico
 from modules.logger import UILogger
 from modules.styles import scrollable, set_status
@@ -562,6 +563,8 @@ class EmailSenderWidget(QWidget):
 
     def envio_finalizado(self, sucesso: bool, mensagem: str):
         self.btn_enviar.setEnabled(True)
+
+        record_execution("email", success=sucesso, summary=mensagem)
 
         if get_modo_automatico().ativo:
             get_modo_automatico().desativar()

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from modules.download_scraper import DownloadWorker
+from modules.execution_history import record_execution
 from modules.fluxo_orquestrador import get_modo_automatico
 from modules.logger import UILogger
 from modules.services.data_bus import DataBus
@@ -238,6 +239,7 @@ class OrcamentoDownloaderWidget(QWidget):
                 mensagem = "O processo de download foi interrompido por uma falha técnica. Consulte o log."
                 self.log(f"❌ {mensagem}")
 
+            record_execution("downloader", success=False, summary=mensagem)
             if get_modo_automatico().ativo:
                 get_modo_automatico().desativar()
                 self.automatico_finished.emit(False, mensagem)
@@ -246,6 +248,11 @@ class OrcamentoDownloaderWidget(QWidget):
             else:
                 QMessageBox.critical(self, "Falha no download", mensagem)
             return
+
+        resumo_historico = f"{len(salvos)} orçamento(s) salvo(s)."
+        if sem_arquivos:
+            resumo_historico += f" {len(sem_arquivos)} requisição(ões) sem arquivos."
+        record_execution("downloader", success=True, summary=resumo_historico)
 
         if get_modo_automatico().ativo:
             get_modo_automatico().desativar()

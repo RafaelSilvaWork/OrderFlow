@@ -29,6 +29,7 @@ from modules.playwright_pool import cleanup_playwright_pool
 from modules.splash_screen import SplashScreen
 from modules.styles import APP_STYLESHEET, aplicar_titlebar_escura, set_status
 from modules.telemetry import init_telemetry, report_app_started
+from modules.ui_execution_history import ExecutionHistoryDialog
 from modules.ui_help import HelpCornerButton, HelpDialog
 from modules.ui_module_status import ModuleStatusDialog
 from modules.ui_versions import VersionHistoryDialog
@@ -373,6 +374,16 @@ class FrameworkApp(QMainWindow):
         self.btn_version_history.clicked.connect(self._open_version_history)
         header_layout.addWidget(self.btn_version_history)
 
+        # Botão sempre visível com o resumo das últimas execuções de cada
+        # módulo (ver modules/execution_history.py) - consulta rápida sem
+        # precisar vasculhar o log da aba.
+        self.btn_execution_history = QPushButton("📜 Histórico")
+        self.btn_execution_history.setObjectName("btnHeaderAction")
+        self.btn_execution_history.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_execution_history.setToolTip("Ver as últimas execuções de cada módulo")
+        self.btn_execution_history.clicked.connect(self._open_execution_history)
+        header_layout.addWidget(self.btn_execution_history)
+
         # Atalho sempre visível para a aba de Ajuda - sem ele, com muitos
         # módulos instalados a aba "❓ Ajuda" pode ficar fora da parte visível
         # da barra de abas (que não faz scroll automático), então este botão
@@ -467,6 +478,10 @@ class FrameworkApp(QMainWindow):
 
     def _open_version_history(self):
         dialog = VersionHistoryDialog(self)
+        dialog.exec()
+
+    def _open_execution_history(self):
+        dialog = ExecutionHistoryDialog(self)
         dialog.exec()
 
     def abrir_ajuda(self, secao_key: str = "visao_geral"):

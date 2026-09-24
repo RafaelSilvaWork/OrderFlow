@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 
 from modules.config import ProfileManager
 from modules.coupa_scraper import AutomationWorker
+from modules.execution_history import record_execution
 from modules.fluxo_orquestrador import AutomaticFlowRunner
 from modules.logger import UILogger
 from modules.services.data_bus import DataBus
@@ -397,6 +398,18 @@ class CoupaExtractorWidget(QWidget):
         self.last_results = results
         DataBus.store_extraction_results(results)
         self.btn_excel.setEnabled(True)
+
+        pedidos_count = sum(1 for item in results if item.get("status") == "Com pedido")
+        sem_pedido_count = sum(1 for item in results if item.get("status") == "Sem pedido emitido")
+        erro_count = sum(1 for item in results if "erro" in item)
+        record_execution(
+            "extrator",
+            success=erro_count == 0,
+            summary=(
+                f"{pedidos_count} pedido(s) encontrado(s), {sem_pedido_count} sem pedido "
+                f"emitido, {erro_count} com erro."
+            ),
+        )
 
         if not results:
             self.tbl_results.setRowCount(0)

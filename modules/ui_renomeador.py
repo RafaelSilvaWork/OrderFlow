@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from modules.config import HISTORICO_RENOMEADOR
+from modules.execution_history import record_execution
 from modules.services.renomeador_service import RenomeadorService
 
 logger = logging.getLogger(__name__)
@@ -268,6 +269,8 @@ class RenomeadorWidget(QWidget):
             except Exception as e:
                 self.table.setItem(row, 5, QTableWidgetItem(f"\u274c {str(e)}"))
                 self.salvar_historico(arquivo, novo_nome, f"Erro: {str(e)}")
+
+        record_execution("renomeador", success=True, summary=f"{renomeados} arquivo(s) renomeado(s).")
 
         if modo_automatico:
             self.automatico_finished.emit(True, f"Aba 4 concluida: {renomeados} arquivos renomeados.")

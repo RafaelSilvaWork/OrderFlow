@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from modules.execution_history import record_execution
 from modules.fluxo_orquestrador import get_modo_automatico
 from modules.logger import UILogger
 from modules.pdf_generator import PdfGeneratorWorker
@@ -265,6 +266,8 @@ class PedidoPdfGeneratorWidget(QWidget):
     def processo_finalizado(self, resumo: str) -> None:
         self.btn_gerar.setEnabled(True)
         self.btn_cancelar.setEnabled(False)
+
+        record_execution("pdf", success=True, summary=resumo)
 
         if get_modo_automatico().ativo:
             get_modo_automatico().desativar()

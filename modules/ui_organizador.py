@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from modules.execution_history import record_execution
 from modules.logger import UILogger
 from modules.organizador import Organizador, ler_cabecalho_planilha
 from modules.styles import scrollable
@@ -225,12 +226,15 @@ class OrganizadorWidget(QWidget):
             )
             organizador.executar()
 
+            record_execution("organizador", success=True, summary="Organiza\u00e7\u00e3o finalizada.")
+
             if modo_automatico:
                 self.automatico_finished.emit(True, "Aba 5 concluida: organizacao finalizada.")
 
         except Exception as e:
             erro_msg = f"\u274c Erro na organizacao: {str(e)}"
             self.log(erro_msg)
+            record_execution("organizador", success=False, summary=erro_msg)
             if modo_automatico:
                 self.automatico_finished.emit(False, erro_msg)
             else:

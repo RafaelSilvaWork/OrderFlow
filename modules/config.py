@@ -124,6 +124,11 @@ class FrameworkSettings:
         / APP_DATA_DIR_NAME
         / "historico_renomeador.csv"
     )
+    historico_execucoes: Path = field(
+        default_factory=lambda: Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming"))
+        / APP_DATA_DIR_NAME
+        / "historico_execucoes.json"
+    )
     textos_sem_documento: tuple[str, ...] = ("AGUARDE, EM PROCESSAMENTO!",)
     margens_impressao: dict[str, str] = field(
         default_factory=lambda: {"top": "0.4in", "bottom": "0.4in", "left": "0.4in", "right": "0.4in"}
@@ -156,6 +161,7 @@ MAP_SOLICITANTES = SETTINGS.map_solicitantes
 PASTA_SAIDA_PADRAO_PDF = SETTINGS.pasta_saida_padrao_pdf
 PERFIL_EDGE_DOWNLOAD = SETTINGS.perfil_edge_download
 HISTORICO_RENOMEADOR = SETTINGS.historico_renomeador
+HISTORICO_EXECUCOES = SETTINGS.historico_execucoes
 TEXTOS_SEM_DOCUMENTO = SETTINGS.textos_sem_documento
 MARGENS_IMPRESSAO = SETTINGS.margens_impressao
 MAX_TENTATIVAS = SETTINGS.max_tentativas
