@@ -1,5 +1,5 @@
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -30,6 +30,13 @@ from modules.styles import scrollable, set_status
 
 
 class CoupaExtractorWidget(QWidget):
+    # Emitido sempre que uma extração termina (completa, parcial por
+    # cancelamento, ou vazia) e os resultados já estão no DataBus. As abas
+    # que consomem esses resultados (Baixador, Gerador de PDF, Disparo de
+    # E-mails) se conectam a este sinal em main.py - sem ele, elas só
+    # importavam quando o campo estava vazio e ficavam presas à 1ª extração.
+    extracao_concluida = pyqtSignal()
+
     def __init__(self, parent_framework):
         super().__init__()
         self.parent_fw = parent_framework
@@ -457,6 +464,7 @@ class CoupaExtractorWidget(QWidget):
         self.chk_aba6.setEnabled(True)
         self.last_results = results
         DataBus.store_extraction_results(results)
+        self.extracao_concluida.emit()
         self.btn_excel.setEnabled(True)
 
         pedidos_count = sum(1 for item in results if item.get("status") == "Com pedido")

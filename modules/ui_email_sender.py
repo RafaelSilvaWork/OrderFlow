@@ -32,6 +32,7 @@ from modules.email_sender import EmailWorker
 from modules.execution_history import record_execution
 from modules.fluxo_orquestrador import get_modo_automatico
 from modules.logger import UILogger
+from modules.services.data_bus import DataBus
 from modules.styles import scrollable, set_status
 
 try:
@@ -338,13 +339,28 @@ class EmailSenderWidget(QWidget):
     def log(self, msg: str):
         UILogger.auto(self.txt_logs, msg)
 
-    def receber_resultados(self, results: list[dict[str, Any]]):
+    def ao_concluir_extracao(self) -> None:
+        """Chamado quando a Aba 1 conclui uma nova extração (sinal
+        CoupaExtractorWidget.extracao_concluida, ligado em main.py).
+
+        Sem isso, os resultados só chegavam aqui via fluxo automático com a
+        Aba 6 marcada - fora disso a aba seguia com os dados de uma extração
+        antiga e dava pra disparar e-mails sobre eles sem perceber.
+        """
+        self.receber_resultados(
+            DataBus.get_extraction_results(), hora_extracao=DataBus.get_extraction_time_label()
+        )
+
+    def receber_resultados(self, results: list[dict[str, Any]], hora_extracao: str = ""):
+        """hora_extracao (opcional): mostra de qual extração vieram os dados,
+        pra deixar claro quando a aba ainda está com resultados antigos."""
         self.results = results
         validos = [r for r in results if "erro" not in r and r.get("status") != "Sem pedido emitido"]
+        sufixo_hora = f" Extração de {hora_extracao}." if hora_extracao else ""
         set_status(
             self.lbl_status_dados, "success",
             f"{len(results)} registro(s) recebido(s) da Aba 1 "
-            f"({len(validos)} pronto(s) para envio de e-mail)."
+            f"({len(validos)} pronto(s) para envio de e-mail).{sufixo_hora}"
         )
 
     def escolher_pasta_arquivos(self):

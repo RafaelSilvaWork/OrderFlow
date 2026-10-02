@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from modules import module_checkpoint
 from modules.pdf_generator import PdfGeneratorWorker
+from modules.services.data_bus import DataBus
 from modules.ui_pdf_generator import PedidoPdfGeneratorWidget
 
 
@@ -94,3 +95,76 @@ def test_iniciar_geracao_retomada_passa_estado_pro_worker(widget, monkeypatch, t
     assert widget.worker.pedidos == ["PED-200"]
     assert widget.worker.pedidos_originais == ["PED-100", "PED-200"]
     assert widget.worker._contagem_anterior == {"sucesso": 0, "sem_documento": 1, "falha": 0}
+
+
+@pytest.fixture
+def databus_limpo():
+    DataBus.clear()
+    yield
+    DataBus.clear()
+
+
+def _extracao(*pares):
+    return [{"requisicao": req, "status": "Com pedido", "pedido": f"PO nº {ped}"} for req, ped in pares]
+
+
+def test_nova_extracao_substitui_lista_da_extracao_anterior(widget, databus_limpo):
+    DataBus.store_extraction_results(_extracao(("111", "5001"), ("222", "5002")))
+    widget.importar_da_aba1()
+    assert widget.txt_pedidos.toPlainText() == "5001\t111\n5002\t222"
+
+    DataBus.store_extraction_results(_extracao(("333", "6001")))
+    widget.ao_concluir_extracao()
+
+    assert widget.txt_pedidos.toPlainText() == "6001\t333"
+
+
+def test_nova_extracao_sobrescreve_edicao_manual_sobre_a_anterior(widget, databus_limpo):
+    DataBus.store_extraction_results(_extracao(("111", "5001")))
+    widget.importar_da_aba1()
+    widget.txt_pedidos.setPlainText("9999")
+    widget._user_editou_manualmente = True
+
+    DataBus.store_extraction_results(_extracao(("333", "6001")))
+    widget.ao_concluir_extracao()
+
+    assert widget.txt_pedidos.toPlainText() == "6001\t333"
+    assert widget._user_editou_manualmente is False
+
+
+def test_nova_extracao_sem_pedidos_limpa_lista_antiga(widget, databus_limpo):
+    DataBus.store_extraction_results(_extracao(("111", "5001")))
+    widget.importar_da_aba1()
+
+    DataBus.store_extraction_results([{"requisicao": "444", "status": "Sem pedido emitido"}])
+    widget.ao_concluir_extracao()
+
+    assert widget.txt_pedidos.toPlainText() == ""
+    assert "não encontrou" in widget.lbl_import_status.text()
+
+
+def test_importar_da_aba1_sem_dados_nao_apaga_texto_digitado(widget, databus_limpo):
+    widget.txt_pedidos.setPlainText("manual")
+
+    widget.importar_da_aba1()
+
+    assert widget.txt_pedidos.toPlainText() == "manual"
+    assert "Aguardando" in widget.lbl_import_status.text()
+
+
+def test_importacao_mostra_de_qual_extracao_vieram_os_dados(widget, databus_limpo):
+    DataBus.store_extraction_results(_extracao(("111", "5001")))
+
+    widget.importar_da_aba1()
+
+    hora = DataBus.get_extraction_time_label()
+    assert f"(extração de {hora})" in widget.lbl_import_status.text()
+
+
+def test_extracao_sem_pedidos_informa_a_hora_dela(widget, databus_limpo):
+    DataBus.store_extraction_results([{"requisicao": "444", "status": "Sem pedido emitido"}])
+
+    widget.ao_concluir_extracao()
+
+    hora = DataBus.get_extraction_time_label()
+    assert f"Aba 1, {hora}" in widget.lbl_import_status.text()

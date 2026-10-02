@@ -121,14 +121,43 @@ class OrcamentoDownloaderWidget(QWidget):
         if not texto_atual:
             self.importar_da_aba1()
 
-    def importar_da_aba1(self, forcar=False):
-        """Importa requisicoes via DataBus centralizado (Itens 5 e 7)."""
+    def ao_concluir_extracao(self) -> None:
+        """Chamado quando a Aba 1 conclui uma nova extração (sinal
+        CoupaExtractorWidget.extracao_concluida, ligado em main.py).
+
+        A nova extração SUBSTITUI a lista atual, mesmo que o campo já tenha
+        os dados da extração anterior (ou edições manuais sobre eles) - sem
+        isso a lista ficava presa à 1ª extração, já que showEvent só importa
+        quando o campo está vazio.
+        """
+        self.importar_da_aba1(forcar=True, limpar_se_vazio=True)
+
+    def importar_da_aba1(self, forcar=False, limpar_se_vazio=False):
+        """Importa requisicoes via DataBus centralizado (Itens 5 e 7).
+
+        limpar_se_vazio: usado quando uma extração NOVA acabou de terminar -
+        se ela não trouxe nenhuma requisição com pedido, a lista antiga
+        (de uma extração anterior) não vale mais e é esvaziada, em vez de
+        ficar parecendo que ainda é a lista atual.
+        """
         if self._user_editou_manualmente and not forcar:
             return
 
         requisicoes_com_pedido = DataBus.get_requisicoes_com_pedido()
+        hora_extracao = DataBus.get_extraction_time_label()
 
         if not requisicoes_com_pedido:
+            if limpar_se_vazio:
+                self.txt_req_list.blockSignals(True)
+                self.txt_req_list.clear()
+                self.txt_req_list.blockSignals(False)
+                self._user_editou_manualmente = False
+                origem = f"Aba 1, {hora_extracao}" if hora_extracao else "Aba 1"
+                set_status(
+                    self.lbl_import_status, "muted",
+                    f"A última extração ({origem}) não encontrou requisições com pedido emitido.",
+                )
+                return
             set_status(
                 self.lbl_import_status, "muted",
                 "Aguardando dados da Aba 1 (\U0001f4e6 Extrator Inteligente)...",
@@ -138,9 +167,10 @@ class OrcamentoDownloaderWidget(QWidget):
         self.txt_req_list.blockSignals(True)
         self.txt_req_list.setPlainText("\n".join(requisicoes_com_pedido))
         self.txt_req_list.blockSignals(False)
+        sufixo_hora = f" (extra\u00e7\u00e3o de {hora_extracao})" if hora_extracao else ""
         set_status(
             self.lbl_import_status, "success",
-            f"\u2705 {len(requisicoes_com_pedido)} requisicao(oes) importada(s) da Aba 1",
+            f"\u2705 {len(requisicoes_com_pedido)} requisicao(oes) importada(s) da Aba 1{sufixo_hora}",
         )
         self._user_editou_manualmente = False
         # Feedback visual: borda verde por 1.5s

@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from modules import module_checkpoint
 from modules.download_scraper import DownloadWorker
+from modules.services.data_bus import DataBus
 from modules.ui_downloader import OrcamentoDownloaderWidget
 
 
@@ -95,3 +96,76 @@ def test_executar_downloads_retomada_passa_estado_pro_worker(widget, monkeypatch
     assert widget.worker.scraper.requisicoes == ["222"]
     assert widget.worker.scraper.requisicoes_originais == ["111", "222"]
     assert widget.worker.scraper.requisicoes_sem_arquivos == ["111"]
+
+
+@pytest.fixture
+def databus_limpo():
+    DataBus.clear()
+    yield
+    DataBus.clear()
+
+
+def _extracao(*requisicoes):
+    return [{"requisicao": r, "status": "Com pedido", "pedido": f"PO nº {r}0"} for r in requisicoes]
+
+
+def test_nova_extracao_substitui_lista_da_extracao_anterior(widget, databus_limpo):
+    DataBus.store_extraction_results(_extracao("111", "222"))
+    widget.importar_da_aba1()
+    assert widget.txt_req_list.toPlainText() == "111\n222"
+
+    DataBus.store_extraction_results(_extracao("333"))
+    widget.ao_concluir_extracao()
+
+    assert widget.txt_req_list.toPlainText() == "333"
+
+
+def test_nova_extracao_sobrescreve_edicao_manual_sobre_a_anterior(widget, databus_limpo):
+    DataBus.store_extraction_results(_extracao("111"))
+    widget.importar_da_aba1()
+    widget.txt_req_list.setPlainText("999")
+    widget._user_editou_manualmente = True
+
+    DataBus.store_extraction_results(_extracao("333"))
+    widget.ao_concluir_extracao()
+
+    assert widget.txt_req_list.toPlainText() == "333"
+    assert widget._user_editou_manualmente is False
+
+
+def test_nova_extracao_sem_pedidos_limpa_lista_antiga(widget, databus_limpo):
+    DataBus.store_extraction_results(_extracao("111"))
+    widget.importar_da_aba1()
+
+    DataBus.store_extraction_results([{"requisicao": "444", "status": "Sem pedido emitido"}])
+    widget.ao_concluir_extracao()
+
+    assert widget.txt_req_list.toPlainText() == ""
+    assert "não encontrou" in widget.lbl_import_status.text()
+
+
+def test_importar_da_aba1_sem_dados_nao_apaga_texto_digitado(widget, databus_limpo):
+    widget.txt_req_list.setPlainText("manual")
+
+    widget.importar_da_aba1()
+
+    assert widget.txt_req_list.toPlainText() == "manual"
+    assert "Aguardando" in widget.lbl_import_status.text()
+
+
+def test_importacao_mostra_de_qual_extracao_vieram_os_dados(widget, databus_limpo):
+    DataBus.store_extraction_results(_extracao("111"))
+
+    widget.importar_da_aba1()
+
+    hora = DataBus.get_extraction_time_label()
+    assert f"(extração de {hora})" in widget.lbl_import_status.text()
+
+
+def test_extracao_sem_pedidos_informa_a_hora_dela(widget, databus_limpo):
+    DataBus.store_extraction_results([{"requisicao": "444", "status": "Sem pedido emitido"}])
+
+    widget.ao_concluir_extracao()
+
+    hora = DataBus.get_extraction_time_label()
+    assert f"Aba 1, {hora}" in widget.lbl_import_status.text()

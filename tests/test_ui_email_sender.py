@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 from PyQt6.QtWidgets import QApplication, QFileDialog
 
+from modules.services.data_bus import DataBus
 from modules.ui_email_sender import EmailSenderWidget
 
 
@@ -125,3 +126,41 @@ def test_carregar_resultados_manualmente_mapeia_colunas_e_status(widget, tmp_pat
     assert widget.results[0]["status"] == "Com pedido"
     assert widget.results[1]["status"] == "Sem pedido emitido"
     assert widget.results[2] == {"requisicao": "RC3", "erro": "Carregado de planilha"}
+
+
+def test_nova_extracao_substitui_resultados_da_extracao_anterior(widget):
+    DataBus.clear()
+    try:
+        DataBus.store_extraction_results([{"requisicao": "1", "status": "Com pedido"}])
+        widget.ao_concluir_extracao()
+        assert [r["requisicao"] for r in widget.results] == ["1"]
+
+        DataBus.store_extraction_results(
+            [{"requisicao": "2", "status": "Com pedido"}, {"requisicao": "3", "erro": "falhou"}]
+        )
+        widget.ao_concluir_extracao()
+
+        assert [r["requisicao"] for r in widget.results] == ["2", "3"]
+        assert "2 registro(s)" in widget.lbl_status_dados.text()
+        assert "1 pronto(s)" in widget.lbl_status_dados.text()
+    finally:
+        DataBus.clear()
+
+
+def test_nova_extracao_mostra_de_qual_extracao_vieram_os_dados(widget):
+    DataBus.clear()
+    try:
+        DataBus.store_extraction_results([{"requisicao": "1", "status": "Com pedido"}])
+
+        widget.ao_concluir_extracao()
+
+        hora = DataBus.get_extraction_time_label()
+        assert f"Extração de {hora}." in widget.lbl_status_dados.text()
+    finally:
+        DataBus.clear()
+
+
+def test_receber_resultados_sem_hora_mantem_texto_original(widget):
+    widget.receber_resultados([{"requisicao": "1", "status": "Com pedido"}])
+
+    assert "Extração de" not in widget.lbl_status_dados.text()

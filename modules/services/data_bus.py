@@ -76,6 +76,21 @@ class DataBus:
         return cls.get("extraction_results", [])
 
     @classmethod
+    def get_extraction_time_label(cls) -> str:
+        """Hora da última extração, pronta para exibir nas abas que consomem
+        os resultados ("14:32", ou "07/10 14:32" se for de outro dia).
+
+        Retorna "" se ainda não houve extração nesta sessão. Serve pra deixar
+        visível de QUAL extração vieram os dados que a aba está mostrando.
+        """
+        timestamp = cls.get("extraction_timestamp")
+        if not isinstance(timestamp, datetime):
+            return ""
+        if timestamp.date() == datetime.now().date():
+            return timestamp.strftime("%H:%M")
+        return timestamp.strftime("%d/%m %H:%M")
+
+    @classmethod
     def get_requisicoes_com_pedido(cls) -> list[str]:
         """Retorna lista de requisicoes que possuem pedido emitido.
 

@@ -46,3 +46,23 @@ def test_store_extraction_results_and_helpers():
     validos = DataBus.get_resultados_validos_para_email()
     assert len(validos) == 1
     assert validos[0]["requisicao"] == "100"
+
+
+def test_extraction_time_label_vazio_sem_extracao():
+    assert DataBus.get_extraction_time_label() == ""
+
+
+def test_extraction_time_label_mostra_so_hora_se_for_de_hoje():
+    DataBus.store_extraction_results([])
+
+    label = DataBus.get_extraction_time_label()
+
+    assert len(label) == 5 and label[2] == ":"
+
+
+def test_extraction_time_label_inclui_data_se_for_de_outro_dia():
+    from datetime import datetime
+
+    DataBus.store("extraction_timestamp", datetime(2020, 1, 7, 14, 32))
+
+    assert DataBus.get_extraction_time_label() == "07/01 14:32"

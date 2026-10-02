@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from modules import module_checkpoint
 from modules.coupa_scraper import AutomationWorker
+from modules.services.data_bus import DataBus
 from modules.ui_coupa import CoupaExtractorWidget
 
 
@@ -231,3 +232,40 @@ def test_open_edge_for_login_retomada_passa_estado_pro_worker(widget, monkeypatc
     assert widget.worker.requisicoes == ["222"]
     assert widget.worker.requisicoes_originais == ["111", "222"]
     assert widget.worker.resultados_anteriores == [{"requisicao": "111", "status": "Sem pedido emitido"}]
+
+
+def _sem_fluxo_automatico(widget, monkeypatch):
+    # record_execution gravaria no historico real do usuario (%APPDATA%).
+    monkeypatch.setattr("modules.ui_coupa.record_execution", lambda *a, **k: None)
+    for chk in (widget.chk_aba2, widget.chk_aba3, widget.chk_aba4, widget.chk_aba5, widget.chk_aba6):
+        chk.setChecked(False)
+
+
+def test_automation_finished_emite_extracao_concluida_com_resultados_ja_no_databus(widget, monkeypatch):
+    _sem_fluxo_automatico(widget, monkeypatch)
+    DataBus.clear()
+    vistos = []
+    widget.extracao_concluida.connect(lambda: vistos.append(DataBus.get_extraction_results()))
+    resultados = [{"requisicao": "1", "pedido": "PO nº 5001", "status": "Com pedido"}]
+
+    try:
+        widget.automation_finished(resultados)
+    finally:
+        DataBus.clear()
+
+    # Quem escuta o sinal precisa já encontrar os resultados novos no DataBus.
+    assert vistos == [resultados]
+
+
+def test_automation_finished_vazio_tambem_emite_extracao_concluida(widget, monkeypatch):
+    _sem_fluxo_automatico(widget, monkeypatch)
+    DataBus.clear()
+    vistos = []
+    widget.extracao_concluida.connect(lambda: vistos.append(DataBus.get_extraction_results()))
+
+    try:
+        widget.automation_finished([])
+    finally:
+        DataBus.clear()
+
+    assert vistos == [[]]

@@ -459,6 +459,15 @@ class FrameworkApp(QMainWindow):
         if self.tab_manage_profiles is not None and self.tab_email_sender is not None:
             self.tab_manage_profiles.profiles_changed.connect(self.tab_email_sender.refresh_profiles)
 
+        # Nova extração concluída na Aba 1 -> atualiza as abas que consomem os
+        # resultados. Sem isso elas só importavam quando o campo estava vazio
+        # e ficavam presas aos dados da 1ª extração (ver ao_concluir_extracao
+        # em cada aba).
+        if self.tab_coupa is not None:
+            for aba_destino in (self.tab_downloader, self.tab_pdf_generator, self.tab_email_sender):
+                if aba_destino is not None:
+                    self.tab_coupa.extracao_concluida.connect(aba_destino.ao_concluir_extracao)
+
         # Verifica atualizações em background via QThread (UI sempre na thread principal)
         self._update_manager = UpdateManager(self)
         self._update_manager.update_declined.connect(self._show_update_available_button)

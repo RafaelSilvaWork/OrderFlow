@@ -127,26 +127,52 @@ class PedidoPdfGeneratorWidget(QWidget):
         if not texto_atual:
             self.importar_da_aba1()
 
-    def importar_da_aba1(self, forcar: bool = False) -> None:
+    def ao_concluir_extracao(self) -> None:
+        """Chamado quando a Aba 1 conclui uma nova extração (sinal
+        CoupaExtractorWidget.extracao_concluida, ligado em main.py).
+
+        A nova extração SUBSTITUI a lista atual, mesmo que o campo já tenha
+        os dados da extração anterior (ou edições manuais sobre eles) - sem
+        isso a lista ficava presa à 1ª extração, já que showEvent só importa
+        quando o campo está vazio.
+        """
+        self.importar_da_aba1(forcar=True, limpar_se_vazio=True)
+
+    def importar_da_aba1(self, forcar: bool = False, limpar_se_vazio: bool = False) -> None:
         """Importa a lista de pedidos extraidos da Aba 1 via DataBus (Item 7).
 
         Args:
             forcar: Se True, sobrescreve mesmo se o usuario digitou manualmente.
+            limpar_se_vazio: Usado quando uma extração NOVA acabou de terminar -
+                se ela não trouxe nenhum pedido, a lista antiga (de uma extração
+                anterior) não vale mais e é esvaziada.
         """
         if self._user_editou_manualmente and not forcar:
             return
 
         pedidos_extraidos = DataBus.get_pedidos_extraidos()
+        hora_extracao = DataBus.get_extraction_time_label()
 
         if pedidos_extraidos:
             self.txt_pedidos.blockSignals(True)
             self.txt_pedidos.setPlainText("\n".join(pedidos_extraidos))
             self.txt_pedidos.blockSignals(False)
+            sufixo_hora = f" (extração de {hora_extracao})" if hora_extracao else ""
             set_status(
                 self.lbl_import_status, "success",
-                f"✅ {len(pedidos_extraidos)} pedido(s) importado(s) da Aba 1 via DataBus",
+                f"✅ {len(pedidos_extraidos)} pedido(s) importado(s) da Aba 1 via DataBus{sufixo_hora}",
             )
             self._user_editou_manualmente = False
+        elif limpar_se_vazio:
+            self.txt_pedidos.blockSignals(True)
+            self.txt_pedidos.clear()
+            self.txt_pedidos.blockSignals(False)
+            self._user_editou_manualmente = False
+            origem = f"Aba 1, {hora_extracao}" if hora_extracao else "Aba 1"
+            set_status(
+                self.lbl_import_status, "muted",
+                f"A última extração ({origem}) não encontrou pedidos emitidos.",
+            )
         else:
             set_status(self.lbl_import_status, "muted", "Aguardando dados da Aba 1 (📦 Extrator Inteligente)...")
 
